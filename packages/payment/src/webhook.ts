@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import type { RazorpayWebhookEvent } from './types';
+import type { RazorpayWebhookEvent } from './types.js';
 
 /**
  * Verifies a Razorpay webhook signature using HMAC-SHA256.

@@ -1,6 +1,6 @@
-import IORedis from "ioredis";
+import { Redis } from "ioredis";
 
-function createRedisConnection(): IORedis {
+function createRedisConnection(): Redis {
   const redisUrl = process.env["REDIS_URL"];
 
   if (!redisUrl) {
@@ -9,13 +9,13 @@ function createRedisConnection(): IORedis {
 
   const isTls = redisUrl.startsWith("rediss://");
 
-  const connection = new IORedis(redisUrl, {
+  const connection = new Redis(redisUrl, {
     // Required for BullMQ — must be null, not a finite number
     maxRetriesPerRequest: null,
     // Enable TLS for Upstash and other rediss:// endpoints
     tls: isTls ? {} : undefined,
     // Reconnect with exponential backoff, max 3s
-    retryStrategy(times) {
+    retryStrategy(times: number) {
       return Math.min(times * 200, 3000);
     },
     enableReadyCheck: false,
@@ -38,9 +38,9 @@ function createRedisConnection(): IORedis {
   return connection;
 }
 
-let _connection: IORedis | null = null;
+let _connection: Redis | null = null;
 
-export function getRedisConnection(): IORedis {
+export function getRedisConnection(): Redis {
   if (!_connection) {
     _connection = createRedisConnection();
   }

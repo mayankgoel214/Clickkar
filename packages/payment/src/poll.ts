@@ -1,5 +1,5 @@
-import { getRazorpayClient } from './client';
-import type { PaymentLinkStatus } from './types';
+import { getRazorpayClient } from './client.js';
+import type { PaymentLinkStatus } from './types.js';
 
 export interface PaymentLinkStatusResult {
   status: PaymentLinkStatus;

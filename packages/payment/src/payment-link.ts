@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import { getRazorpayClient } from './client';
-import type { CreatePaymentLinkParams } from './types';
+import { getRazorpayClient } from './client.js';
+import type { CreatePaymentLinkParams } from './types.js';
 
 const DEFAULT_EXPIRES_IN_MINUTES = 30;
 const DEFAULT_DESCRIPTION = 'WhatsAds - Professional Product Photo';

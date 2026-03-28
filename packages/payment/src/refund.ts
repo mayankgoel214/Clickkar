@@ -1,4 +1,4 @@
-import { getRazorpayClient } from './client';
+import { getRazorpayClient } from './client.js';
 
 export interface RefundResult {
   refundId: string;
