@@ -5,7 +5,7 @@
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
-    "build": "pnpm --filter @whatsads/db build && tsc",
+    "build": "pnpm --filter '@whatsads/worker^...' build && tsc",
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit"
