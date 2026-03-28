@@ -1,0 +1,24 @@
+{
+  "name": "@whatsads/worker",
+  "version": "0.0.1",
+  "private": true,
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "bullmq": "^5.0.0",
+    "ioredis": "^5.4.0",
+    "zod": "^3.23.0",
+    "@whatsads/ai": "workspace:*",
+    "@whatsads/queue": "workspace:*",
+    "@whatsads/db": "workspace:*",
+    "@whatsads/whatsapp": "workspace:*",
+    "@whatsads/storage": "workspace:*",
+    "@whatsads/payment": "workspace:*",
+    "@whatsads/session": "workspace:*"
+  }
+}

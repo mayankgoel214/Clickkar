@@ -1,0 +1,278 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum SessionState {
+  IDLE
+  ONBOARDING_WELCOME
+  ONBOARDING_NAME
+  ONBOARDING_CATEGORY
+  ONBOARDING_CONSENT
+  AWAITING_IMAGES
+  AWAITING_STYLE
+  AWAITING_VOICE
+  CONFIRMING
+  AWAITING_PAYMENT
+  PROCESSING
+  DELIVERED
+  AWAITING_EDIT
+  EDIT_PROCESSING
+}
+
+enum OrderStatus {
+  created
+  payment_pending
+  payment_confirmed
+  processing
+  completed
+  failed
+  refunded
+}
+
+enum PaymentStatus {
+  pending
+  captured
+  failed
+  refunded
+}
+
+enum JobPipeline {
+  primary
+  fallback
+}
+
+enum JobStatus {
+  queued
+  processing
+  completed
+  failed
+}
+
+enum WebhookSource {
+  whatsapp
+  razorpay
+}
+
+// ---------------------------------------------------------------------------
+// User
+// ---------------------------------------------------------------------------
+
+model User {
+  id              String    @id @default(uuid()) @db.Uuid
+  phoneNumber     String    @unique @map("phone_number")
+  name            String?
+  language        String    @default("hi")
+  businessType    String?   @map("business_type")
+  stylePreference String?   @map("style_preference")
+  totalImages     Int       @default(0) @map("total_images")
+  firstSeenAt     DateTime  @default(now()) @map("first_seen_at")
+  lastSeenAt      DateTime  @updatedAt @map("last_seen_at")
+
+  session         Session?
+  orders          Order[]
+
+  @@map("users")
+}
+
+// ---------------------------------------------------------------------------
+// Session — one active session per phone number
+// ---------------------------------------------------------------------------
+
+model Session {
+  id                  String       @id @default(uuid()) @db.Uuid
+  phoneNumber         String       @unique @map("phone_number")
+  state               SessionState @default(IDLE)
+  currentOrderId      String?      @map("current_order_id") @db.Uuid
+  styleSelection      String?      @map("style_selection")
+  voiceInstructions   String?      @map("voice_instructions")
+  imageMediaIds       String[]     @map("image_media_ids")
+  imageStorageUrls    String[]     @map("image_storage_urls")
+  lastUserMessageAt   DateTime?    @map("last_user_message_at")
+  stateEnteredAt      DateTime?    @map("state_entered_at")
+  cswExpiresAt        DateTime?    @map("csw_expires_at")
+  createdAt           DateTime     @default(now()) @map("created_at")
+  updatedAt           DateTime     @updatedAt @map("updated_at")
+
+  userId              String       @unique @db.Uuid @map("user_id")
+  user                User         @relation(fields: [userId], references: [id])
+
+  @@map("sessions")
+}
+
+// ---------------------------------------------------------------------------
+// Order
+// ---------------------------------------------------------------------------
+
+model Order {
+  id                      String      @id @default(uuid()) @db.Uuid
+  phoneNumber             String      @map("phone_number")
+  imageCount              Int         @default(1) @map("image_count")
+  style                   String?
+  voiceInstructions       String?     @map("voice_instructions")
+  inputImageUrls          String[]    @map("input_image_urls")
+  outputImageUrls         String[]    @map("output_image_urls")
+  cutoutUrls              String[]    @map("cutout_urls")
+  status                  OrderStatus @default(created)
+  amount                  Int         // in paise
+  revisionsUsed           Int         @default(0) @map("revisions_used")
+  maxFreeRevisions        Int         @default(2) @map("max_free_revisions")
+  razorpayPaymentLinkId   String?     @map("razorpay_payment_link_id")
+  razorpayPaymentLinkUrl  String?     @map("razorpay_payment_link_url")
+  razorpayPaymentId       String?     @map("razorpay_payment_id")
+  qaBestScore             Float?      @map("qa_best_score")
+  qaAttempts              Int         @default(0) @map("qa_attempts")
+  productCategory         String?     @map("product_category")
+  processingStartedAt     DateTime?   @map("processing_started_at")
+  processingCompletedAt   DateTime?   @map("processing_completed_at")
+  errorMessage            String?     @map("error_message")
+  createdAt               DateTime    @default(now()) @map("created_at")
+  updatedAt               DateTime    @updatedAt @map("updated_at")
+
+  userId                  String      @db.Uuid @map("user_id")
+  user                    User        @relation(fields: [userId], references: [id])
+
+  payments                Payment[]
+  jobs                    ImageJob[]
+
+  @@index([phoneNumber])
+  @@index([status])
+  @@index([createdAt])
+  @@map("orders")
+}
+
+// ---------------------------------------------------------------------------
+// Payment
+// ---------------------------------------------------------------------------
+
+model Payment {
+  id                    String        @id @default(uuid()) @db.Uuid
+  razorpayPaymentId     String        @unique @map("razorpay_payment_id")
+  razorpayPaymentLinkId String?       @map("razorpay_payment_link_id")
+  amount                Int           // in paise
+  currency              String        @default("INR")
+  method                String?
+  status                PaymentStatus @default(pending)
+  capturedAt            DateTime?     @map("captured_at")
+  createdAt             DateTime      @default(now()) @map("created_at")
+  updatedAt             DateTime      @updatedAt @map("updated_at")
+
+  orderId               String        @db.Uuid @map("order_id")
+  order                 Order         @relation(fields: [orderId], references: [id])
+
+  refunds               Refund[]
+
+  @@index([orderId])
+  @@map("payments")
+}
+
+// ---------------------------------------------------------------------------
+// Refund
+// ---------------------------------------------------------------------------
+
+model Refund {
+  id                String   @id @default(uuid()) @db.Uuid
+  razorpayRefundId  String   @unique @map("razorpay_refund_id")
+  amount            Int      // in paise
+  status            String
+  reason            String?
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  paymentId         String   @db.Uuid @map("payment_id")
+  payment           Payment  @relation(fields: [paymentId], references: [id])
+
+  @@index([paymentId])
+  @@map("refunds")
+}
+
+// ---------------------------------------------------------------------------
+// ImageJob — per-image processing within a multi-image order
+// ---------------------------------------------------------------------------
+
+model ImageJob {
+  id              String      @id @default(uuid()) @db.Uuid
+  inputImageUrl   String      @map("input_image_url")
+  outputImageUrl  String?     @map("output_image_url")
+  cutoutUrl       String?     @map("cutout_url")
+  style           String?
+  promptUsed      String?     @map("prompt_used")
+  pipeline        JobPipeline @default(primary)
+  status          JobStatus   @default(queued)
+  qaScore         Float?      @map("qa_score")
+  qaAttempts      Int         @default(0) @map("qa_attempts")
+  attempts        Int         @default(0)
+  maxAttempts     Int         @default(3) @map("max_attempts")
+  startedAt       DateTime?   @map("started_at")
+  completedAt     DateTime?   @map("completed_at")
+  errorMessage    String?     @map("error_message")
+  durationMs      Int?        @map("duration_ms")
+  createdAt       DateTime    @default(now()) @map("created_at")
+  updatedAt       DateTime    @updatedAt @map("updated_at")
+
+  orderId         String      @db.Uuid @map("order_id")
+  order           Order       @relation(fields: [orderId], references: [id])
+
+  @@index([orderId])
+  @@index([status])
+  @@map("image_jobs")
+}
+
+// ---------------------------------------------------------------------------
+// ProcessedMessage — WhatsApp webhook idempotency
+// ---------------------------------------------------------------------------
+
+model ProcessedMessage {
+  messageId   String   @id @map("message_id")
+  processedAt DateTime @default(now()) @map("processed_at")
+
+  @@map("processed_messages")
+}
+
+// ---------------------------------------------------------------------------
+// WebhookEvent — audit log for all incoming webhooks
+// ---------------------------------------------------------------------------
+
+model WebhookEvent {
+  id           String        @id @default(uuid()) @db.Uuid
+  source       WebhookSource
+  eventType    String        @map("event_type")
+  externalId   String?       @map("external_id")
+  rawPayload   Json          @map("raw_payload")
+  processed    Boolean       @default(false)
+  processedAt  DateTime?     @map("processed_at")
+  createdAt    DateTime      @default(now()) @map("created_at")
+
+  @@index([source, eventType])
+  @@index([createdAt])
+  @@map("webhook_events")
+}
+
+// ---------------------------------------------------------------------------
+// PromptTemplate — A/B testing and versioned prompts per style
+// ---------------------------------------------------------------------------
+
+model PromptTemplate {
+  id               String   @id @default(uuid()) @db.Uuid
+  styleId          String   @map("style_id")
+  version          Int
+  prompt           String
+  negativePrompt   String?  @map("negative_prompt")
+  categoryOverrides Json?   @map("category_overrides")
+  avgQaScore       Float?   @map("avg_qa_score")
+  usageCount       Int      @default(0) @map("usage_count")
+  active           Boolean  @default(true)
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  @@unique([styleId, version])
+  @@index([styleId, active])
+  @@map("prompt_templates")
+}

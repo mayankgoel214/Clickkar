@@ -1,0 +1,27 @@
+{
+  "name": "whatsads",
+  "private": true,
+  "scripts": {
+    "dev:api": "pnpm --filter @whatsads/api dev",
+    "dev:worker": "pnpm --filter @whatsads/worker dev",
+    "dev": "pnpm run --parallel dev:api dev:worker",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "db:generate": "pnpm --filter @whatsads/db generate",
+    "db:migrate": "pnpm --filter @whatsads/db migrate",
+    "db:push": "pnpm --filter @whatsads/db push",
+    "db:studio": "pnpm --filter @whatsads/db studio",
+    "clean": "pnpm -r exec rm -rf dist node_modules"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "prettier": "^3.4.0"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "packageManager": "pnpm@9.15.0"
+}

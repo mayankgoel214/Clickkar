@@ -1,0 +1,36 @@
+import { getStorageClient } from "./client.js";
+import { getPublicUrl } from "./url.js";
+
+/**
+ * Upload a file buffer to Supabase Storage.
+ *
+ * Uses upsert so that re-processing the same path overwrites the previous
+ * version without throwing a conflict error.
+ *
+ * @param bucket      Target bucket name
+ * @param path        Storage path within the bucket (e.g. "orders/abc/input.jpg")
+ * @param buffer      File contents as a Node Buffer
+ * @param contentType MIME type (e.g. "image/jpeg", "audio/ogg; codecs=opus")
+ * @returns           The full public URL for the uploaded file
+ */
+export async function uploadFile(
+  bucket: string,
+  path: string,
+  buffer: Buffer,
+  contentType: string
+): Promise<string> {
+  const client = getStorageClient();
+
+  const { error } = await client.storage.from(bucket).upload(path, buffer, {
+    contentType,
+    upsert: true,
+  });
+
+  if (error) {
+    throw new Error(
+      `Storage upload failed [bucket=${bucket} path=${path}]: ${error.message}`
+    );
+  }
+
+  return getPublicUrl(bucket, path);
+}

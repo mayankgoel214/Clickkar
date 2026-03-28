@@ -1,0 +1,20 @@
+{
+  "name": "@whatsads/db",
+  "version": "0.0.1",
+  "private": true,
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "generate": "prisma generate",
+    "migrate": "prisma migrate dev",
+    "push": "prisma db push",
+    "studio": "prisma studio"
+  },
+  "dependencies": {
+    "prisma": "~6.6.0",
+    "@prisma/client": "~6.6.0"
+  }
+}

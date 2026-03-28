@@ -1,0 +1,16 @@
+{
+  "name": "@whatsads/payment",
+  "version": "0.0.1",
+  "private": true,
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "razorpay": "^2.9.0",
+    "zod": "^3.23.0"
+  }
+}

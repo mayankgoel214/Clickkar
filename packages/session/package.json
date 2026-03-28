@@ -1,0 +1,21 @@
+{
+  "name": "@whatsads/session",
+  "version": "0.0.1",
+  "private": true,
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@whatsads/db": "workspace:*",
+    "@whatsads/whatsapp": "workspace:*",
+    "@whatsads/queue": "workspace:*",
+    "@whatsads/payment": "workspace:*",
+    "@whatsads/storage": "workspace:*",
+    "@whatsads/ai": "workspace:*",
+    "zod": "^3.23.0"
+  }
+}
