@@ -53,6 +53,7 @@ enum JobPipeline {
   segmentation
   bria
   nano_banana
+  composite
 }
 
 enum JobStatus {

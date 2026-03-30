@@ -12,7 +12,7 @@ export const ImageProcessingJobDataSchema = z.object({
   style: z.string().optional(),
   voiceInstructions: z.string().optional(),
   productCategory: z.string().optional(),
-  pipeline: z.enum(["primary", "fallback", "nano_banana", "segmentation", "bria"]).default("nano_banana"),
+  pipeline: z.enum(["primary", "fallback", "nano_banana", "segmentation", "bria", "composite"]).default("composite"),
 });
 
 export type ImageProcessingJobData = z.infer<typeof ImageProcessingJobDataSchema>;

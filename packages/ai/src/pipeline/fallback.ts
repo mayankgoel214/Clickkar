@@ -1,6 +1,5 @@
 import { fal } from '@fal-ai/client';
 import sharp from 'sharp';
-import { buildScenePrompt } from '../prompts/product-shot.js';
 
 function ensureFalConfig() {
   const key = process.env['FAL_KEY'] ?? process.env['FAL_API_KEY'] ?? '';
@@ -11,30 +10,26 @@ function ensureFalConfig() {
 // Types
 // ---------------------------------------------------------------------------
 
-interface FallbackPipelineParams {
+export interface CompositePipelineParams {
   imageUrl: string;
-  style: string;
+  creativePrompt: string;
   productCategory: string;
 }
 
-interface FallbackPipelineOutput {
+export interface CompositePipelineOutput {
   outputUrl: string;
   cutoutUrl: string;
 }
 
 // ---------------------------------------------------------------------------
-// fal.ai models — upgraded from v1 pipeline
+// fal.ai models
 // ---------------------------------------------------------------------------
 
-/** BiRefNet — state-of-the-art bilateral reference segmentation */
 const BIREFNET_MODEL = 'fal-ai/birefnet/v2';
-/** Flux Pro 1.1 — high-quality background generation */
-const FLUX_PRO_MODEL = 'fal-ai/flux-pro/v1.1';
-/** IC-Light V2 — relighting to match product with background */
-const ICLIGHT_MODEL = 'fal-ai/ic-light/v2';
+const FLUX_INPAINT_MODEL = 'fal-ai/flux-pro/v1/fill';
 
 // ---------------------------------------------------------------------------
-// Step 1: Background removal via BiRefNet v2
+// Layer 1: Background removal via BiRefNet v2
 // ---------------------------------------------------------------------------
 
 export async function removeBackground(imageUrl: string): Promise<string> {
@@ -60,7 +55,7 @@ export async function removeBackground(imageUrl: string): Promise<string> {
 
   console.info(
     JSON.stringify({
-      event: 'segmentation_birefnet_complete',
+      event: 'birefnet_complete',
       cutoutUrl,
       durationMs: Date.now() - startMs,
     })
@@ -70,201 +65,94 @@ export async function removeBackground(imageUrl: string): Promise<string> {
 }
 
 // ---------------------------------------------------------------------------
-// Step 2: Product enhancement via sharp (on cutout PNG)
+// Layer 2: Product cutout enhancement
 // ---------------------------------------------------------------------------
 
-/** Category-specific saturation boost multipliers */
 const SATURATION_BY_CATEGORY: Record<string, number> = {
-  food: 1.25,
-  jewellery: 1.15,
-  garment: 1.1,
+  food: 1.2,
+  jewellery: 1.12,
+  garment: 1.08,
   skincare: 1.05,
-  candle: 1.2,
-  bag: 1.1,
-  home_goods: 1.08,
+  candle: 1.15,
+  bag: 1.08,
+  home_goods: 1.06,
+  electronics: 1.03,
+  handicraft: 1.1,
   other: 1.05,
 };
 
-async function enhanceProductCutout(
+export async function enhanceCutout(
   cutoutBuffer: Buffer,
   productCategory: string
 ): Promise<Buffer> {
   const saturation = SATURATION_BY_CATEGORY[productCategory] ?? 1.05;
+  const meta = await sharp(cutoutBuffer).metadata();
+  const w = meta.width ?? 800;
+  const h = meta.height ?? 800;
 
-  const enhanced = await sharp(cutoutBuffer)
-    .normalize() // stretch histogram — improves washed-out product shots
-    .modulate({ saturation }) // boost saturation by category
-    .sharpen({ sigma: 0.8, m1: 1.0, m2: 0.5 }) // gentle sharpening for product detail
-    .png() // keep transparency
+  let pipeline = sharp(cutoutBuffer);
+
+  // Upscale small cutouts
+  if (w < 800 && h < 800) {
+    const scale = 800 / Math.max(w, h);
+    pipeline = pipeline.resize(
+      Math.round(w * scale),
+      Math.round(h * scale),
+      { kernel: 'lanczos3' }
+    );
+  }
+
+  return pipeline
+    .normalize()
+    .modulate({ saturation })
+    .sharpen({ sigma: 0.6, m1: 0.8, m2: 0.4 })
+    .png()
     .toBuffer();
-
-  return enhanced;
 }
 
 // ---------------------------------------------------------------------------
-// Step 3: Background generation via Flux Pro 1.1
+// Layer 3+4: Inpainting — generate creative scene AROUND the product
 // ---------------------------------------------------------------------------
 
-async function generateBackground(
-  style: string,
-  productCategory: string
-): Promise<string> {
-  const startMs = Date.now();
+/**
+ * Place the product cutout on a 1024x1024 canvas, create a mask where the
+ * product is (keep zone), and run Flux inpainting to generate the creative
+ * scene around it. The product pixels are preserved.
+ */
+async function prepareCanvasAndMask(
+  cutoutBuffer: Buffer
+): Promise<{ canvas: Buffer; mask: Buffer; left: number; top: number }> {
+  const CANVAS_SIZE = 1024;
 
-  const scenePrompt = buildScenePrompt(style, productCategory);
-  const bgPrompt = `${scenePrompt}, empty scene, no product, no object, background only, photography backdrop, high quality studio photography`;
+  const cutMeta = await sharp(cutoutBuffer).metadata();
+  const cutW = cutMeta.width ?? 500;
+  const cutH = cutMeta.height ?? 500;
 
-  const result = (await fal.subscribe(FLUX_PRO_MODEL as string, {
-    input: {
-      prompt: bgPrompt,
-      image_size: 'square_hd', // 1024x1024
-      num_images: 1,
-      guidance_scale: 3.5,
-    },
-    logs: false,
-  })) as {
-    data: {
-      images?: Array<{ url: string }>;
-    };
-  };
-
-  const bgUrl = result.data?.images?.[0]?.url ?? null;
-
-  if (!bgUrl) {
-    throw new Error('Flux Pro returned no background URL');
-  }
-
-  console.info(
-    JSON.stringify({
-      event: 'segmentation_bg_generated',
-      bgUrl,
-      style,
-      durationMs: Date.now() - startMs,
-    })
-  );
-
-  return bgUrl;
-}
-
-// ---------------------------------------------------------------------------
-// Step 4: Relighting via IC-Light V2 (optional, best-effort)
-// ---------------------------------------------------------------------------
-
-async function relightProduct(
-  cutoutUrl: string,
-  backgroundUrl: string
-): Promise<string | null> {
-  const startMs = Date.now();
-
-  try {
-    const result = (await fal.subscribe(ICLIGHT_MODEL as string, {
-      input: {
-        image_url: cutoutUrl,
-        prompt: 'Product with natural lighting that matches the background scene, consistent shadows and highlights, photorealistic',
-        background_image_url: backgroundUrl,
-      },
-      logs: false,
-    })) as {
-      data: {
-        images?: Array<{ url: string }>;
-        image?: { url: string };
-      };
-    };
-
-    const relitUrl =
-      result.data?.images?.[0]?.url ?? result.data?.image?.url ?? null;
-
-    if (relitUrl) {
-      console.info(
-        JSON.stringify({
-          event: 'segmentation_relight_complete',
-          durationMs: Date.now() - startMs,
-        })
-      );
-      return relitUrl;
-    }
-  } catch (err) {
-    // IC-Light is optional — log and continue without relighting
-    console.warn(
-      JSON.stringify({
-        event: 'segmentation_relight_skipped',
-        error: err instanceof Error ? err.message : String(err),
-        durationMs: Date.now() - startMs,
-      })
-    );
-  }
-
-  return null;
-}
-
-// ---------------------------------------------------------------------------
-// Step 5: Composite cutout onto background via sharp
-// ---------------------------------------------------------------------------
-
-async function downloadBuffer(url: string): Promise<Buffer> {
-  const resp = await fetch(url);
-  if (!resp.ok) {
-    throw new Error(
-      `Failed to download image from ${url}: ${resp.status} ${resp.statusText}`
-    );
-  }
-  return Buffer.from(await resp.arrayBuffer());
-}
-
-async function compositeImages(
-  cutoutBuffer: Buffer,
-  backgroundBuffer: Buffer
-): Promise<Buffer> {
-  // Get background dimensions
-  const bgMeta = await sharp(backgroundBuffer).metadata();
-  const bgW = bgMeta.width ?? 1024;
-  const bgH = bgMeta.height ?? 1024;
-
-  // Scale cutout to fit 75% of background area, centred
-  const targetW = Math.round(bgW * 0.75);
-  const targetH = Math.round(bgH * 0.75);
+  // Scale cutout to fill ~55% of canvas (leaves room for creative elements)
+  const maxDim = Math.round(CANVAS_SIZE * 0.55);
+  const scale = Math.min(maxDim / cutW, maxDim / cutH);
+  const scaledW = Math.round(cutW * scale);
+  const scaledH = Math.round(cutH * scale);
 
   const resizedCutout = await sharp(cutoutBuffer)
-    .resize(targetW, targetH, {
-      fit: 'inside',
-      withoutEnlargement: true,
-    })
-    .toBuffer();
-
-  // Get resized cutout dimensions to calculate centering offset
-  const cutoutMeta = await sharp(resizedCutout).metadata();
-  const cutW = cutoutMeta.width ?? targetW;
-  const cutH = cutoutMeta.height ?? targetH;
-
-  const left = Math.round((bgW - cutW) / 2);
-  // Slightly below centre looks more natural for product shots
-  const top = Math.round((bgH - cutH) / 2) + Math.round(bgH * 0.04);
-
-  // Create a soft shadow from the cutout silhouette
-  const shadowBuffer = await sharp({
-    create: {
-      width: cutW,
-      height: cutH,
-      channels: 4,
-      background: { r: 0, g: 0, b: 0, alpha: 0.25 },
-    },
-  })
+    .resize(scaledW, scaledH, { kernel: 'lanczos3' })
     .png()
     .toBuffer();
 
-  // Shadow offset
-  const shadowOffsetX = Math.round(bgW * 0.008);
-  const shadowOffsetY = Math.round(bgH * 0.015);
+  // Center horizontally, position in lower-center area (natural product placement)
+  const left = Math.round((CANVAS_SIZE - scaledW) / 2);
+  const top = Math.round(CANVAS_SIZE * 0.5 - scaledH / 2);
 
-  // Composite: background → shadow → cutout
-  const composited = await sharp(backgroundBuffer)
+  // Canvas: white background with product composited on it
+  const canvas = await sharp({
+    create: {
+      width: CANVAS_SIZE,
+      height: CANVAS_SIZE,
+      channels: 4,
+      background: { r: 255, g: 255, b: 255, alpha: 255 },
+    },
+  })
     .composite([
-      {
-        input: shadowBuffer,
-        left: left + shadowOffsetX,
-        top: top + shadowOffsetY,
-        blend: 'multiply',
-      },
       {
         input: resizedCutout,
         left,
@@ -272,124 +160,235 @@ async function compositeImages(
         blend: 'over',
       },
     ])
-    .jpeg({ quality: 92, mozjpeg: true })
+    .png()
     .toBuffer();
 
-  return composited;
+  // Mask: WHITE = inpaint (generate), BLACK = keep (product stays)
+  // Extract alpha from cutout to know where the product is
+  const alphaChannel = await sharp(resizedCutout)
+    .ensureAlpha()
+    .extractChannel(3)
+    .toBuffer();
+
+  // Invert: product area (alpha > 0) becomes black (keep), rest white (generate)
+  // Then place on white canvas
+  const productMaskPiece = await sharp(alphaChannel)
+    .negate() // invert: product pixels become black, transparent becomes white
+    .png()
+    .toBuffer();
+
+  const mask = await sharp({
+    create: {
+      width: CANVAS_SIZE,
+      height: CANVAS_SIZE,
+      channels: 3,
+      background: { r: 255, g: 255, b: 255 }, // white = inpaint everything by default
+    },
+  })
+    .composite([
+      {
+        input: productMaskPiece,
+        left,
+        top,
+        blend: 'multiply', // black areas (product) stay black
+      },
+    ])
+    .png()
+    .toBuffer();
+
+  return { canvas, mask, left, top };
+}
+
+/**
+ * Upload a buffer to a temporary URL that fal.ai can access.
+ * Uses Supabase storage, falls back to fal.ai's own upload.
+ */
+async function uploadTempImage(buffer: Buffer, name: string): Promise<string> {
+  try {
+    const { uploadFile, Buckets } = await import('@whatsads/storage');
+    return await uploadFile(Buckets.PROCESSED_IMAGES, `temp_${name}_${Date.now()}.png`, buffer, 'image/png');
+  } catch {
+    // Fallback: use fal.ai's storage
+    // Convert buffer to data URL as last resort
+    console.warn('Storage unavailable for temp upload, trying fal storage');
+    try {
+      const { fal: falClient } = await import('@fal-ai/client');
+      const blob = new Blob([buffer], { type: 'image/png' });
+      const url = await falClient.storage.upload(blob);
+      return url;
+    } catch {
+      throw new Error('Cannot upload temporary image — no storage available');
+    }
+  }
+}
+
+/**
+ * Run Flux Pro inpainting: generate the creative scene around the product.
+ * Product pixels are preserved via the mask.
+ */
+async function inpaintCreativeScene(
+  canvasUrl: string,
+  maskUrl: string,
+  creativePrompt: string
+): Promise<string> {
+  ensureFalConfig();
+  const startMs = Date.now();
+
+  const fullPrompt = `${creativePrompt}, professional product advertisement photography, high quality, 8k, studio lighting`;
+
+  console.info(
+    JSON.stringify({
+      event: 'inpaint_start',
+      promptPreview: fullPrompt.slice(0, 120),
+    })
+  );
+
+  const result = (await fal.subscribe(FLUX_INPAINT_MODEL as string, {
+    input: {
+      image_url: canvasUrl,
+      mask_url: maskUrl,
+      prompt: fullPrompt,
+      image_size: 'square_hd',
+      num_inference_steps: 28,
+      guidance_scale: 3.5,
+      strength: 0.95,
+    },
+    logs: false,
+  })) as {
+    data: {
+      images?: Array<{ url: string }>;
+      image?: { url: string };
+    };
+  };
+
+  const outputUrl =
+    result.data?.images?.[0]?.url ?? result.data?.image?.url ?? null;
+
+  if (!outputUrl) {
+    throw new Error('Flux inpainting returned no output URL');
+  }
+
+  console.info(
+    JSON.stringify({
+      event: 'inpaint_complete',
+      outputUrl,
+      durationMs: Date.now() - startMs,
+    })
+  );
+
+  return outputUrl;
 }
 
 // ---------------------------------------------------------------------------
-// Upload helper — stores buffer to Supabase Storage and returns public URL
+// Helpers
 // ---------------------------------------------------------------------------
 
-async function uploadToStorage(
-  buffer: Buffer,
-  filename: string
-): Promise<string> {
+export async function downloadBuffer(url: string): Promise<Buffer> {
+  const resp = await fetch(url);
+  if (!resp.ok) {
+    throw new Error(
+      `Failed to download: ${resp.status} ${resp.statusText} — ${url}`
+    );
+  }
+  return Buffer.from(await resp.arrayBuffer());
+}
+
+async function uploadToStorage(buffer: Buffer, filename: string): Promise<string> {
   try {
     const { uploadFile, Buckets } = await import('@whatsads/storage');
     return await uploadFile(Buckets.PROCESSED_IMAGES, filename, buffer, 'image/jpeg');
   } catch {
-    console.warn(
-      JSON.stringify({
-        event: 'segmentation_storage_unavailable',
-        filename,
-        note: 'Using data URL fallback — set up @whatsads/storage for production',
-      })
-    );
     const base64 = buffer.toString('base64');
     return `data:image/jpeg;base64,${base64.slice(0, 100)}...`;
   }
 }
 
 // ---------------------------------------------------------------------------
-// Main export
+// Main pipeline: Inpainting-based creative ad generation
 // ---------------------------------------------------------------------------
 
 /**
- * Run the segmentation-first compositing pipeline.
+ * Generate a professional creative ad using inpainting.
  *
- * This pipeline PRESERVES the original product pixels — it never regenerates
- * the product. Steps:
- * 1. Remove background via BiRefNet v2 (state-of-the-art segmentation)
- * 2. Enhance product cutout via sharp (normalize, saturate, sharpen)
- * 3. Generate background via Flux Pro 1.1 (high-quality scene)
- * 4. Relight product to match background via IC-Light V2 (best-effort)
- * 5. Composite cutout onto background with natural shadow
+ * The product cutout from the user's photo is placed on a canvas, masked,
+ * and Flux Pro inpainting generates the entire creative scene AROUND it.
+ * The product pixels are NEVER touched by AI.
  *
- * Returns both the final composited URL and the cutout URL (for fast revisions).
+ * This creates ads like Offshoot — water splashes, scattered ingredients,
+ * dramatic lighting, dynamic compositions — while preserving the exact product.
  */
-export async function runFallbackPipeline(
-  params: FallbackPipelineParams
-): Promise<FallbackPipelineOutput> {
-  ensureFalConfig();
+export async function runCompositePipeline(
+  params: CompositePipelineParams
+): Promise<CompositePipelineOutput> {
   const startMs = Date.now();
 
   console.info(
     JSON.stringify({
-      event: 'segmentation_pipeline_start',
-      style: params.style,
+      event: 'creative_pipeline_start',
       productCategory: params.productCategory,
     })
   );
 
-  // Step 1: Remove background
+  // Layer 1: Remove background
   const cutoutUrl = await removeBackground(params.imageUrl);
+  const cutoutBuffer = await downloadBuffer(cutoutUrl);
 
-  // Steps 2 & 3 run in parallel
-  const cutoutBufferPromise = downloadBuffer(cutoutUrl).then((buf) =>
-    enhanceProductCutout(buf, params.productCategory)
-  );
+  // Layer 2: Enhance cutout
+  const enhancedCutout = await enhanceCutout(cutoutBuffer, params.productCategory);
 
-  const backgroundUrlPromise = generateBackground(
-    params.style,
-    params.productCategory
-  );
+  // Layer 3: Prepare canvas + mask for inpainting
+  const { canvas, mask } = await prepareCanvasAndMask(enhancedCutout);
 
-  const [enhancedCutoutBuffer, backgroundUrl] = await Promise.all([
-    cutoutBufferPromise,
-    backgroundUrlPromise,
+  // Upload canvas and mask so Flux can access them
+  const [canvasUrl, maskUrl] = await Promise.all([
+    uploadTempImage(canvas, 'canvas'),
+    uploadTempImage(mask, 'mask'),
   ]);
 
-  // Step 4: Try relighting the enhanced cutout (best-effort)
-  // Upload enhanced cutout first so IC-Light can access it via URL
+  // Layer 4: Inpaint creative scene around the product
+  const outputUrl = await inpaintCreativeScene(
+    canvasUrl,
+    maskUrl,
+    params.creativePrompt
+  );
+
+  // Download final output and re-upload to our storage as JPEG
+  const outputBuffer = await downloadBuffer(outputUrl);
   const timestamp = Date.now();
-  const tempCutoutUrl = await uploadToStorage(
-    enhancedCutoutBuffer,
-    `cutout_${timestamp}.png`
-  );
 
-  let finalCutoutBuffer = enhancedCutoutBuffer;
-  const relitUrl = await relightProduct(tempCutoutUrl, backgroundUrl);
-  if (relitUrl) {
-    try {
-      finalCutoutBuffer = await downloadBuffer(relitUrl);
-    } catch {
-      // Use non-relit cutout if download fails
-    }
-  }
+  const finalOutputBuffer = await sharp(outputBuffer)
+    .jpeg({ quality: 95, mozjpeg: true })
+    .toBuffer();
 
-  // Step 5: Download background and composite
-  const backgroundBuffer = await downloadBuffer(backgroundUrl);
-  const compositedBuffer = await compositeImages(
-    finalCutoutBuffer,
-    backgroundBuffer
-  );
-
-  // Upload final output
-  const [outputUrl] = await Promise.all([
-    uploadToStorage(compositedBuffer, `output_${timestamp}.jpg`),
+  const [storedOutputUrl, storedCutoutUrl] = await Promise.all([
+    uploadToStorage(finalOutputBuffer, `output_${timestamp}.jpg`),
+    uploadToStorage(enhancedCutout, `cutout_${timestamp}.png`),
   ]);
 
   console.info(
     JSON.stringify({
-      event: 'segmentation_pipeline_complete',
-      outputUrl,
-      cutoutUrl: tempCutoutUrl,
-      relightApplied: relitUrl !== null,
+      event: 'creative_pipeline_complete',
+      outputUrl: storedOutputUrl,
+      cutoutUrl: storedCutoutUrl,
       durationMs: Date.now() - startMs,
     })
   );
 
-  return { outputUrl, cutoutUrl: tempCutoutUrl };
+  return { outputUrl: storedOutputUrl, cutoutUrl: storedCutoutUrl };
+}
+
+// ---------------------------------------------------------------------------
+// Legacy fallback export (backward compat)
+// ---------------------------------------------------------------------------
+
+export async function runFallbackPipeline(
+  params: { imageUrl: string; style: string; productCategory: string }
+): Promise<CompositePipelineOutput> {
+  const { buildScenePrompt } = await import('../prompts/product-shot.js');
+  const scenePrompt = buildScenePrompt(params.style, params.productCategory);
+  return runCompositePipeline({
+    imageUrl: params.imageUrl,
+    creativePrompt: scenePrompt,
+    productCategory: params.productCategory,
+  });
 }

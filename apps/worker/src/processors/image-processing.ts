@@ -68,17 +68,22 @@ export async function processImageJob(job: Job): Promise<void> {
       'image/jpeg',
     );
 
-    // Upload cutout if available
+    // Upload cutout if available (skip data URLs — they're fallback placeholders)
     let cutoutUrl: string | undefined;
-    if (result.cutoutUrl) {
-      const cutoutPath = `${data.orderId}/${data.imageJobId}-cutout.png`;
-      const cutoutBuffer = await fetch(result.cutoutUrl).then((r) => r.arrayBuffer());
-      cutoutUrl = await uploadFile(
-        Buckets.PROCESSED_IMAGES,
-        cutoutPath,
-        Buffer.from(cutoutBuffer),
-        'image/png',
-      );
+    if (result.cutoutUrl && result.cutoutUrl.startsWith('http')) {
+      try {
+        const cutoutPath = `${data.orderId}/${data.imageJobId}-cutout.png`;
+        const cutoutBuffer = await fetch(result.cutoutUrl).then((r) => r.arrayBuffer());
+        cutoutUrl = await uploadFile(
+          Buckets.PROCESSED_IMAGES,
+          cutoutPath,
+          Buffer.from(cutoutBuffer),
+          'image/png',
+        );
+      } catch {
+        // Cutout upload is non-critical — continue without it
+        cutoutUrl = result.cutoutUrl;
+      }
     }
 
     // Update job record

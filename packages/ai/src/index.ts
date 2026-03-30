@@ -5,8 +5,8 @@
  * using a smart AI-driven approach:
  *   - Product Analysis: Gemini 2.5 Flash deep product understanding
  *   - Ad Prompt: Gemini generates tailored scene descriptions
- *   - Primary: Nano Banana 2 via fal.ai (Google's product photography model)
- *   - Fallback: BiRefNet + Flux Pro + IC-Light segmentation compositing
+ *   - Pipeline: BiRefNet cutout → Flux Pro background → sharp compositing
+ *   - Product pixels are NEVER regenerated — only the background is AI-generated
  *   - QA: Gemini comparative check (input vs output fidelity)
  *   - Transcription: Groq Whisper Turbo with Sarvam AI fallback
  *   - Instruction parsing: Gemini 2.5 Flash Lite

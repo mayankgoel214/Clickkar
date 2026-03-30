@@ -3,16 +3,29 @@ import { resolve } from 'path';
 loadEnv({ path: resolve(import.meta.dirname, '../../../.env'), override: true });
 
 import { Worker } from 'bullmq';
-import { getRedisConnection } from '@whatsads/queue';
+import { Redis } from 'ioredis';
 import { QueueNames } from '@whatsads/queue';
 import { getConfig } from './config.js';
 import { processImageJob } from './processors/image-processing.js';
 import { processPaymentCheck } from './processors/payment-check.js';
 import { processSessionTimeout } from './processors/session-timeout.js';
 
+function createWorkerConnection(): Redis {
+  const redisUrl = process.env['REDIS_URL'];
+  if (!redisUrl) throw new Error('REDIS_URL not set');
+  const isTls = redisUrl.startsWith('rediss://');
+  return new Redis(redisUrl, {
+    maxRetriesPerRequest: null,
+    tls: isTls ? {} : undefined,
+    enableReadyCheck: false,
+    lazyConnect: false,
+  });
+}
+
 async function main() {
   const config = getConfig();
-  const connection = getRedisConnection();
+  // Each BullMQ Worker needs its OWN Redis connection
+  const connection = createWorkerConnection();
 
   console.log(`Clickkar Worker starting (${config.NODE_ENV})`);
 
