@@ -2,10 +2,12 @@
  * @whatsads/ai — Core AI pipeline package.
  *
  * Processes product photos into professional images for Indian SMB sellers
- * using a smart hybrid approach:
- *   - Primary: Bria Product Shot via fal.ai ($0.04/image, single API call)
- *   - Fallback: RMBG 2.0 + Flux Schnell + sharp compositing
- *   - QA: Gemini 2.5 Flash Lite (input assessment + output scoring)
+ * using a smart AI-driven approach:
+ *   - Product Analysis: Gemini 2.5 Flash deep product understanding
+ *   - Ad Prompt: Gemini generates tailored scene descriptions
+ *   - Primary: Nano Banana 2 via fal.ai (Google's product photography model)
+ *   - Fallback: BiRefNet + Flux Pro + IC-Light segmentation compositing
+ *   - QA: Gemini comparative check (input vs output fidelity)
  *   - Transcription: Groq Whisper Turbo with Sarvam AI fallback
  *   - Instruction parsing: Gemini 2.5 Flash Lite
  */
@@ -19,6 +21,16 @@ export {
   type ProcessImageParams,
   type ProcessImageResult,
 } from './pipeline/orchestrator.js';
+
+// ---------------------------------------------------------------------------
+// Product Analysis
+// ---------------------------------------------------------------------------
+
+export {
+  analyzeProduct,
+  generateAdPrompt,
+  type ProductAnalysis,
+} from './pipeline/product-analyzer.js';
 
 // ---------------------------------------------------------------------------
 // QA

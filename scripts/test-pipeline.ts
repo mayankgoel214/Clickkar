@@ -1,6 +1,6 @@
 /**
- * Test script: run the full AI pipeline (Kontext Pro → Segmentation → Bria)
- * against a sample product image with comparative QA.
+ * Test script: run the full AI pipeline (Nano Banana → Segmentation → Bria)
+ * with deep product analysis and tailored ad prompts.
  *
  * Run:
  *   cd /Users/lending/WhatsAds && npx tsx scripts/test-pipeline.ts
@@ -25,7 +25,7 @@ function loadEnv(envPath: string): void {
     if (eqIndex === -1) continue;
     const key = trimmed.slice(0, eqIndex).trim();
     const value = trimmed.slice(eqIndex + 1).trim();
-    if (key) process.env[key] = value; // always override
+    if (key) process.env[key] = value;
   }
 }
 
@@ -34,13 +34,11 @@ loadEnv(resolve('/Users/lending/WhatsAds/.env'));
 import { processProductImage } from '../packages/ai/dist/index.js';
 
 // ---------------------------------------------------------------------------
-// Test config — public product image
+// Test config — public product image (leather bag)
 // ---------------------------------------------------------------------------
 
 const TEST_IMAGE_URL =
   'https://images.unsplash.com/photo-1548036328-c9fa89d128fa?w=800&q=80';
-const TEST_STYLE = 'clean_white';
-const TEST_CATEGORY = 'bag';
 
 // ---------------------------------------------------------------------------
 // Main
@@ -48,13 +46,12 @@ const TEST_CATEGORY = 'bag';
 
 async function main() {
   console.log('='.repeat(60));
-  console.log('Clickkar Pipeline Test — Full Orchestrator');
+  console.log('Clickkar Pipeline Test — Nano Banana + Smart Analysis');
   console.log('='.repeat(60));
   console.log('Image URL:', TEST_IMAGE_URL);
-  console.log('Style:', TEST_STYLE);
-  console.log('Category:', TEST_CATEGORY);
   console.log('FAL_KEY:', (process.env['FAL_KEY'] ?? '').slice(0, 12) + '...');
   console.log('GOOGLE_GENAI_API_KEY:', (process.env['GOOGLE_GENAI_API_KEY'] ?? '').slice(0, 12) + '...');
+  console.log('(No style or category — system auto-detects everything)');
   console.log();
 
   const startMs = Date.now();
@@ -62,8 +59,7 @@ async function main() {
   try {
     const result = await processProductImage({
       imageUrl: TEST_IMAGE_URL,
-      style: TEST_STYLE,
-      productCategory: TEST_CATEGORY,
+      // No style, no category — let the system figure it out
       maxAttempts: 3,
     });
 
@@ -78,14 +74,20 @@ async function main() {
     if (result.cutoutUrl) {
       console.log('Cutout URL:', result.cutoutUrl);
     }
+    if (result.adPrompt) {
+      console.log('\nAd Prompt Used:', result.adPrompt);
+    }
+    if (result.productAnalysis) {
+      console.log('\nProduct Analysis:', JSON.stringify({
+        productName: result.productAnalysis.productName,
+        category: result.productAnalysis.category,
+        priceSegment: result.productAnalysis.priceSegment,
+        targetAudience: result.productAnalysis.targetAudience,
+        mood: result.productAnalysis.recommendedScene.mood,
+      }, null, 2));
+    }
     if (result.rejected) {
       console.log('REJECTED:', result.rejectionReason);
-    }
-    if (result.inputAssessment) {
-      console.log('Input assessment:', JSON.stringify({
-        usable: result.inputAssessment.usable,
-        productCategory: result.inputAssessment.productCategory,
-      }));
     }
 
     console.log('\nSUCCESS — Total time:', Date.now() - startMs, 'ms');

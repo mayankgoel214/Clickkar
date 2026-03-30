@@ -52,6 +52,7 @@ enum JobPipeline {
   kontext
   segmentation
   bria
+  nano_banana
 }
 
 enum JobStatus {

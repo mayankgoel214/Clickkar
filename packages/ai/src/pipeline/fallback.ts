@@ -37,7 +37,8 @@ const ICLIGHT_MODEL = 'fal-ai/ic-light/v2';
 // Step 1: Background removal via BiRefNet v2
 // ---------------------------------------------------------------------------
 
-async function removeBackground(imageUrl: string): Promise<string> {
+export async function removeBackground(imageUrl: string): Promise<string> {
+  ensureFalConfig();
   const startMs = Date.now();
 
   const result = (await fal.subscribe(BIREFNET_MODEL as string, {

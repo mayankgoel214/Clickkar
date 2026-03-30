@@ -9,10 +9,10 @@ export const ImageProcessingJobDataSchema = z.object({
   imageJobId: z.string().uuid(),
   phoneNumber: z.string().min(10),
   inputImageUrl: z.string().url(),
-  style: z.string().min(1),
+  style: z.string().optional(),
   voiceInstructions: z.string().optional(),
   productCategory: z.string().optional(),
-  pipeline: z.enum(["primary", "fallback"]).default("primary"),
+  pipeline: z.enum(["primary", "fallback", "nano_banana", "segmentation", "bria"]).default("nano_banana"),
 });
 
 export type ImageProcessingJobData = z.infer<typeof ImageProcessingJobDataSchema>;

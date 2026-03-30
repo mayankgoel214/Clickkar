@@ -1,12 +1,13 @@
 import { assessInputImage } from '../qa/assess.js';
-import { checkOutputQuality, checkOutputWithReference } from '../qa/output-check.js';
+import { checkOutputWithReference } from '../qa/output-check.js';
 import { preprocessImage } from './preprocess.js';
-import { runKontextShot } from './kontext-shot.js';
-import { runFallbackPipeline } from './fallback.js';
+import { analyzeProduct, generateAdPrompt } from './product-analyzer.js';
+import { runNanoBananaShot } from './nano-banana-shot.js';
+import { removeBackground, runFallbackPipeline } from './fallback.js';
 import { runProductShot } from './product-shot.js';
-import { buildKontextPrompt, buildScenePrompt } from '../prompts/product-shot.js';
 import type { InputAssessment } from '../qa/assess.js';
 import type { ComparativeAssessment } from '../qa/output-check.js';
+import type { ProductAnalysis } from './product-analyzer.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -15,11 +16,11 @@ import type { ComparativeAssessment } from '../qa/output-check.js';
 export interface ProcessImageParams {
   /** Supabase storage URL of the raw input image */
   imageUrl: string;
-  /** Style ID (e.g. clean_white, festival, marble_premium) */
-  style: string;
+  /** Style ID — optional, auto-determined from product analysis */
+  style?: string;
   /** Detected or declared product category */
   productCategory?: string;
-  /** Parsed voice instruction text to append to scene prompt */
+  /** Parsed voice instruction text to incorporate into the ad prompt */
   voiceInstructions?: string;
   /** Maximum pipeline attempts before returning best result (default: 3) */
   maxAttempts?: number;
@@ -29,10 +30,12 @@ export interface ProcessImageResult {
   outputUrl: string;
   cutoutUrl?: string;
   qaScore: number;
-  pipeline: 'kontext' | 'segmentation' | 'bria';
+  pipeline: 'nano_banana' | 'segmentation' | 'bria';
   attempts: number;
   durationMs: number;
   inputAssessment?: InputAssessment;
+  productAnalysis?: ProductAnalysis;
+  adPrompt?: string;
   rejected?: boolean;
   rejectionReason?: string;
 }
@@ -42,7 +45,7 @@ interface AttemptRecord {
   outputUrl: string;
   cutoutUrl?: string;
   qaScore: number;
-  pipeline: 'kontext' | 'segmentation' | 'bria';
+  pipeline: 'nano_banana' | 'segmentation' | 'bria';
   assessment: ComparativeAssessment;
 }
 
@@ -50,13 +53,8 @@ interface AttemptRecord {
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Comparative QA pass: score >= 70 AND fidelity >= 25 */
 const QA_PASS_SCORE = 70;
 const QA_FIDELITY_MIN = 25;
-
-/** Lower threshold for "acceptable" results when all pipelines tried */
-const QA_ACCEPTABLE_SCORE = 55;
-
 const DEFAULT_MAX_ATTEMPTS = 3;
 
 // ---------------------------------------------------------------------------
@@ -80,6 +78,25 @@ function isPassingQA(assessment: ComparativeAssessment): boolean {
   );
 }
 
+/** Map product analysis to a fallback style ID for the segmentation pipeline */
+function deriveStyleFromAnalysis(analysis: ProductAnalysis): string {
+  const mood = analysis.recommendedScene.mood.toLowerCase();
+  const segment = analysis.priceSegment;
+
+  if (mood.includes('festiv') || mood.includes('celebrat')) return 'festival';
+  if (segment === 'luxury' || segment === 'premium') return 'marble_premium';
+  if (mood.includes('warm') || mood.includes('cozy') || mood.includes('rustic'))
+    return 'warm_lifestyle';
+  if (mood.includes('outdoor') || mood.includes('natural') || mood.includes('fresh'))
+    return 'outdoor_bokeh';
+  if (mood.includes('minimal') || mood.includes('dark') || mood.includes('moody'))
+    return 'gradient_minimal';
+  if (mood.includes('flat') || mood.includes('overhead') || mood.includes('top'))
+    return 'flat_lay';
+
+  return 'clean_white';
+}
+
 // ---------------------------------------------------------------------------
 // Main export
 // ---------------------------------------------------------------------------
@@ -87,26 +104,23 @@ function isPassingQA(assessment: ComparativeAssessment): boolean {
 /**
  * Orchestrate the full product image processing pipeline.
  *
- * This is the main entry point called by the background worker.
+ * Pipeline: messy photo → clean cutout → smart analysis → ad prompt → generation
  *
- * New pipeline order (optimized for product fidelity):
  * 1. Download + preprocess (sharp)
  * 2. Assess input quality (Gemini) — reject if unusable
- * 3. Attempt 1: Flux Kontext Pro — preserves product via image editing
- * 4. Attempt 2: Segmentation pipeline — BiRefNet + Flux Pro + IC-Light
- * 5. Attempt 3: Bria Product Shot — last resort
- * 6. Return best result by comparative QA score
- *
- * All attempts use COMPARATIVE QA (input vs output) to catch product distortion.
+ * 3. Remove background (BiRefNet v2) — clean product cutout
+ * 4. Deep product analysis + Ad prompt generation (parallel with step 3 analysis)
+ * 5. Attempt 1: Nano Banana 2 with CLEAN CUTOUT + tailored prompt
+ * 6. Attempt 2: Segmentation pipeline (cutout already available)
+ * 7. Attempt 3: Bria Product Shot (last resort)
+ * 8. Return best result by comparative QA score
  */
 export async function processProductImage(
   params: ProcessImageParams
 ): Promise<ProcessImageResult> {
   const totalStart = Date.now();
   const maxAttempts = params.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
-  const productCategory = params.productCategory ?? 'other';
   const attempts: AttemptRecord[] = [];
-
   const stageTiming: Record<string, number> = {};
 
   // -------------------------------------------------------------------------
@@ -129,8 +143,6 @@ export async function processProductImage(
   console.info(
     JSON.stringify({
       event: 'orchestrator_preprocessed',
-      style: params.style,
-      productCategory,
       durationMs: stageTiming['preprocess'],
     })
   );
@@ -155,7 +167,7 @@ export async function processProductImage(
     return {
       outputUrl: '',
       qaScore: 0,
-      pipeline: 'kontext',
+      pipeline: 'nano_banana',
       attempts: 0,
       durationMs: Date.now() - totalStart,
       inputAssessment,
@@ -164,87 +176,184 @@ export async function processProductImage(
     };
   }
 
-  // Use Gemini-detected category if caller didn't specify
-  const resolvedCategory =
-    params.productCategory ?? inputAssessment.productCategory ?? 'other';
-
   // Keep the preprocessed input buffer for comparative QA
   const inputBufferForQA = processedBuffer;
 
   // -------------------------------------------------------------------------
-  // Stage 3: Attempt 1 — Flux Kontext Pro (primary)
+  // Stage 3: Background removal + Deep analysis + Ad prompt (PARALLEL)
+  //
+  // These three are independent and can run at the same time:
+  // - BiRefNet removes background → clean cutout URL
+  // - Gemini analyzes the product → structured analysis
+  // - (Ad prompt depends on analysis, so it runs after)
+  // -------------------------------------------------------------------------
+
+  const parallelStart = Date.now();
+
+  // Start background removal and product analysis in parallel
+  const [cutoutUrl, analysis] = await Promise.all([
+    removeBackground(params.imageUrl).catch((err) => {
+      console.error(
+        JSON.stringify({
+          event: 'orchestrator_bg_removal_error',
+          error: err instanceof Error ? err.message : String(err),
+        })
+      );
+      return null; // Continue without cutout — will use raw image
+    }),
+    analyzeProduct(processedBuffer).catch((err) => {
+      console.error(
+        JSON.stringify({
+          event: 'orchestrator_analysis_error',
+          error: err instanceof Error ? err.message : String(err),
+        })
+      );
+      // Fallback analysis
+      const fallback: ProductAnalysis = {
+        productName: 'Product',
+        brandName: null,
+        productType: inputAssessment.productCategory ?? 'other',
+        specificDescription: 'A product item',
+        dominantColors: ['neutral'],
+        material: 'unknown',
+        shape: 'standard',
+        keyVisualElements: [],
+        visibleText: [],
+        targetAudience: 'general consumers',
+        priceSegment: 'mid_range',
+        salesChannel: 'online marketplace',
+        desiredEmotion: 'trust',
+        recommendedScene: {
+          surface: 'clean white surface',
+          background: 'soft gradient background',
+          lighting: 'soft diffused studio lighting',
+          colorPalette: 'neutral whites and grays',
+          props: [],
+          mood: 'clean and professional',
+          photographyStyle: 'e-commerce product photography',
+        },
+        category: (inputAssessment.productCategory as ProductAnalysis['category']) ?? 'other',
+      };
+      return fallback;
+    }),
+  ]);
+
+  stageTiming['parallel_prep'] = Date.now() - parallelStart;
+
+  console.info(
+    JSON.stringify({
+      event: 'orchestrator_parallel_prep_complete',
+      hasCutout: cutoutUrl !== null,
+      productName: analysis.productName,
+      category: analysis.category,
+      durationMs: stageTiming['parallel_prep'],
+    })
+  );
+
+  // The image URL to use for generation — clean cutout if available, raw otherwise
+  const generationImageUrl = cutoutUrl ?? params.imageUrl;
+
+  // Now generate the ad prompt (needs analysis to be done first)
+  const promptStart = Date.now();
+  let adPrompt: string;
+  try {
+    adPrompt = await generateAdPrompt(analysis, params.voiceInstructions);
+  } catch (err) {
+    console.error(
+      JSON.stringify({
+        event: 'orchestrator_prompt_error',
+        error: err instanceof Error ? err.message : String(err),
+      })
+    );
+    const scene = analysis.recommendedScene;
+    adPrompt = `${analysis.productType} on ${scene.surface}, ${scene.background}, ${scene.lighting}, ${scene.mood} mood, ${scene.photographyStyle}`;
+  }
+  stageTiming['ad_prompt'] = Date.now() - promptStart;
+
+  console.info(
+    JSON.stringify({
+      event: 'orchestrator_prompt_ready',
+      adPrompt,
+      usingCutout: cutoutUrl !== null,
+      durationMs: stageTiming['ad_prompt'],
+    })
+  );
+
+  // -------------------------------------------------------------------------
+  // Stage 4: Attempt 1 — Nano Banana 2 with CLEAN CUTOUT
   // -------------------------------------------------------------------------
 
   if (maxAttempts >= 1) {
     const attemptStart = Date.now();
     try {
-      const kontextPrompt = buildKontextPrompt(
-        params.style,
-        resolvedCategory,
-        params.voiceInstructions
-      );
-
-      const { outputUrl } = await runKontextShot({
-        imageUrl: params.imageUrl,
-        prompt: kontextPrompt,
+      const { outputUrl } = await runNanoBananaShot({
+        imageUrl: generationImageUrl,
+        prompt: adPrompt,
       });
 
       const outputBuffer = await downloadBuffer(outputUrl);
       const qa = await checkOutputWithReference(inputBufferForQA, outputBuffer);
 
-      stageTiming['attempt_1_kontext'] = Date.now() - attemptStart;
+      stageTiming['attempt_1_nano_banana'] = Date.now() - attemptStart;
 
       console.info(
         JSON.stringify({
-          event: 'orchestrator_attempt_1_kontext',
+          event: 'orchestrator_attempt_1_nano_banana',
           qaScore: qa.score,
           fidelity: qa.productFidelity,
           fidelityScore: qa.productFidelityScore,
           pass: isPassingQA(qa),
-          durationMs: stageTiming['attempt_1_kontext'],
+          usedCutout: cutoutUrl !== null,
+          durationMs: stageTiming['attempt_1_nano_banana'],
         })
       );
 
       attempts.push({
         outputUrl,
+        cutoutUrl: cutoutUrl ?? undefined,
         qaScore: qa.score,
-        pipeline: 'kontext',
+        pipeline: 'nano_banana',
         assessment: qa,
       });
 
       if (isPassingQA(qa)) {
         return {
           outputUrl,
+          cutoutUrl: cutoutUrl ?? undefined,
           qaScore: qa.score,
-          pipeline: 'kontext',
+          pipeline: 'nano_banana',
           attempts: 1,
           durationMs: Date.now() - totalStart,
           inputAssessment,
+          productAnalysis: analysis,
+          adPrompt,
         };
       }
     } catch (err) {
-      stageTiming['attempt_1_kontext'] = Date.now() - attemptStart;
+      stageTiming['attempt_1_nano_banana'] = Date.now() - attemptStart;
       console.error(
         JSON.stringify({
-          event: 'orchestrator_attempt_1_kontext_error',
+          event: 'orchestrator_attempt_1_nano_banana_error',
           error: err instanceof Error ? err.message : String(err),
-          durationMs: stageTiming['attempt_1_kontext'],
+          durationMs: stageTiming['attempt_1_nano_banana'],
         })
       );
     }
   }
 
   // -------------------------------------------------------------------------
-  // Stage 4: Attempt 2 — Segmentation pipeline (BiRefNet + Flux Pro)
+  // Stage 5: Attempt 2 — Segmentation pipeline (cutout already available)
   // -------------------------------------------------------------------------
 
   if (maxAttempts >= 2) {
     const attemptStart = Date.now();
     try {
-      const { outputUrl, cutoutUrl } = await runFallbackPipeline({
+      const derivedStyle = params.style ?? deriveStyleFromAnalysis(analysis);
+
+      const { outputUrl, cutoutUrl: segCutoutUrl } = await runFallbackPipeline({
         imageUrl: params.imageUrl,
-        style: params.style,
-        productCategory: resolvedCategory,
+        style: derivedStyle,
+        productCategory: analysis.category,
       });
 
       const outputBuffer = await downloadBuffer(outputUrl);
@@ -265,7 +374,7 @@ export async function processProductImage(
 
       attempts.push({
         outputUrl,
-        cutoutUrl,
+        cutoutUrl: segCutoutUrl,
         qaScore: qa.score,
         pipeline: 'segmentation',
         assessment: qa,
@@ -274,12 +383,14 @@ export async function processProductImage(
       if (isPassingQA(qa)) {
         return {
           outputUrl,
-          cutoutUrl,
+          cutoutUrl: segCutoutUrl,
           qaScore: qa.score,
           pipeline: 'segmentation',
           attempts: 2,
           durationMs: Date.now() - totalStart,
           inputAssessment,
+          productAnalysis: analysis,
+          adPrompt,
         };
       }
     } catch (err) {
@@ -295,21 +406,18 @@ export async function processProductImage(
   }
 
   // -------------------------------------------------------------------------
-  // Stage 5: Attempt 3 — Bria Product Shot (last resort)
+  // Stage 6: Attempt 3 — Bria Product Shot (last resort)
   // -------------------------------------------------------------------------
 
   if (maxAttempts >= 3) {
     const attemptStart = Date.now();
     try {
-      const scenePrompt = buildScenePrompt(
-        params.style,
-        resolvedCategory,
-        params.voiceInstructions
-      );
+      const scene = analysis.recommendedScene;
+      const briaPrompt = `${scene.surface}, ${scene.background}, ${scene.lighting}, ${scene.photographyStyle}`;
 
       const { outputUrl } = await runProductShot({
         imageUrl: params.imageUrl,
-        scenePrompt,
+        scenePrompt: briaPrompt,
       });
 
       const outputBuffer = await downloadBuffer(outputUrl);
@@ -335,7 +443,6 @@ export async function processProductImage(
         assessment: qa,
       });
 
-      // Return Bria regardless — it's our last option
       return {
         outputUrl,
         qaScore: qa.score,
@@ -343,6 +450,8 @@ export async function processProductImage(
         attempts: 3,
         durationMs: Date.now() - totalStart,
         inputAssessment,
+        productAnalysis: analysis,
+        adPrompt,
       };
     } catch (err) {
       stageTiming['attempt_3_bria'] = Date.now() - attemptStart;
@@ -357,14 +466,13 @@ export async function processProductImage(
   }
 
   // -------------------------------------------------------------------------
-  // All attempts exhausted — return the best scoring attempt
+  // All attempts exhausted — return best
   // -------------------------------------------------------------------------
 
   if (attempts.length === 0) {
     throw new Error('All pipeline attempts failed with no successful output');
   }
 
-  // Pick the best by composite score, with fidelity as tiebreaker
   const best = attempts.reduce((prev, curr) => {
     if (curr.qaScore > prev.qaScore) return curr;
     if (
@@ -395,5 +503,7 @@ export async function processProductImage(
     attempts: attempts.length,
     durationMs: Date.now() - totalStart,
     inputAssessment,
+    productAnalysis: analysis,
+    adPrompt,
   };
 }
