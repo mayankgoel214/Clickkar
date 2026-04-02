@@ -114,6 +114,7 @@ export async function whatsappWebhookRoutes(app: FastifyInstance): Promise<void>
             : message.type === 'audio'
               ? msg.audio?.id
               : undefined,
+        caption: message.type === 'image' ? msg.image?.caption : undefined,
         isVoiceNote: message.type === 'audio' ? msg.audio?.voice === true : undefined,
         buttonReplyId:
           message.type === 'interactive' && msg.interactive?.type === 'button_reply'

@@ -1,27 +1,31 @@
 /**
- * DELIVERED state handler.
+ * DELIVERED state handler — V2 streamlined flow.
  *
  * Called when image processing completes. Sends results to user and
  * handles feedback (love it / make a change / start over).
+ *
+ * On "Love it!":
+ *   - Updates User.lastStyleUsed
+ *   - Increments styleHistory JSON counter
+ *   - Increments User.orderCount
  */
 
 import type { WhatsAppClient } from '@whatsads/whatsapp';
 import { prisma } from '@whatsads/db';
 import type { Session, User } from '@whatsads/db';
 import { transitionTo } from '../db-helpers.js';
+import { handleAwaitingEdit } from './edit.js';
 import {
   msgImageDelivered,
   msgAskFeedback,
   msgThankYou,
-  msgAskWhatToChange,
-  msgStartOver,
 } from '../messages.js';
 import { ButtonIds } from '../types.js';
 import type { MessageContext } from '../types.js';
 import { logger } from '../logger.js';
 
 // ---------------------------------------------------------------------------
-// Send processed images to user (called by worker after processing)
+// Send processed images to user (called by worker after processing completes)
 // ---------------------------------------------------------------------------
 
 export async function sendProcessedImages(
@@ -48,7 +52,6 @@ export async function sendProcessedImages(
     }
   }
 
-  // Small delay then ask for feedback
   await sleep(2000);
   await wa.sendButtons(phoneNumber, msgAskFeedback(language), [
     { id: ButtonIds.FEEDBACK_GREAT, title: language === 'hi' ? 'Bahut badiya!' : 'Love it!' },
@@ -69,40 +72,52 @@ export async function handleDelivered(
 ): Promise<void> {
   const lang = (user.language as 'hi' | 'en') || 'hi';
 
-  // Handle button replies
-  if (message.messageType === 'interactive' && message.buttonReplyId) {
-    switch (message.buttonReplyId) {
-      case ButtonIds.FEEDBACK_GREAT:
-        await handleLoveIt(session, user, wa, lang);
-        return;
+  if (message.messageType === 'interactive') {
+    // Handle feedback buttons
+    if (message.buttonReplyId) {
+      switch (message.buttonReplyId) {
+        case ButtonIds.FEEDBACK_GREAT:
+          await handleLoveIt(session, user, wa, lang);
+          return;
 
-      case ButtonIds.FEEDBACK_CHANGE:
-        await handleMakeChange(session, user, wa, lang);
-        return;
+        case ButtonIds.FEEDBACK_CHANGE:
+          await handleMakeChange(session, user, wa, lang);
+          return;
 
-      case ButtonIds.FEEDBACK_REDO:
-        await handleStartOver(session, user, wa, lang);
-        return;
+        case ButtonIds.FEEDBACK_REDO:
+          await handleStartOver(session, user, wa, lang);
+          return;
+      }
+    }
+
+    // Handle edit list replies (from "Make a change" menu)
+    if (message.listReplyId && message.listReplyId.startsWith('edit_')) {
+      await handleAwaitingEdit(session, user, message, wa);
+      return;
     }
   }
 
-  // If user sends text or voice note in DELIVERED state, treat as edit request
+  // Text or voice note in DELIVERED → treat as edit instruction
   if (message.messageType === 'text' || message.messageType === 'audio') {
-    await handleMakeChange(session, user, wa, lang);
+    await handleAwaitingEdit(session, user, message, wa);
     return;
   }
 
-  // If user sends a new photo, start a new order
+  // New photo → start a new order
   if (message.messageType === 'image') {
-    // Transition back to AWAITING_IMAGES — the image handler will pick it up
-    await transitionTo(session.phoneNumber, 'AWAITING_IMAGES', {
+    await transitionTo(session.phoneNumber, 'AWAITING_PHOTO', {
       imageMediaIds: [],
       imageStorageUrls: [],
       currentOrderId: null,
       styleSelection: null,
       voiceInstructions: null,
     });
-    return; // Let the main router re-dispatch this message
+    const { handleAwaitingPhoto } = await import('./images.js');
+    const freshSession = await prisma.session.findUnique({ where: { phoneNumber: session.phoneNumber } });
+    if (freshSession) {
+      await handleAwaitingPhoto(freshSession, user, message, wa);
+    }
+    return;
   }
 
   // Default: resend feedback buttons
@@ -123,19 +138,29 @@ async function handleLoveIt(
   wa: WhatsAppClient,
   lang: 'hi' | 'en',
 ): Promise<void> {
-  await wa.sendText(session.phoneNumber, msgThankYou(lang, user.name ?? undefined));
+  const isFirstOrder = user.orderCount === 0;
+  await wa.sendText(session.phoneNumber, msgThankYou(lang, isFirstOrder));
 
-  // Update user stats
   const order = session.currentOrderId
     ? await prisma.order.findUnique({ where: { id: session.currentOrderId } })
     : null;
 
-  if (order) {
-    await prisma.user.update({
-      where: { id: user.id },
-      data: { totalImages: { increment: order.imageCount } },
-    });
-  }
+  // Build updated style history JSON
+  const currentHistory = (user.styleHistory as Record<string, number> | null) ?? {};
+  const styleId = session.styleSelection ?? order?.style ?? null;
+  const updatedHistory = styleId
+    ? { ...currentHistory, [styleId]: (currentHistory[styleId] ?? 0) + 1 }
+    : currentHistory;
+
+  await prisma.user.update({
+    where: { id: user.id },
+    data: {
+      orderCount: { increment: 1 },
+      totalImages: { increment: order?.imageCount ?? 0 },
+      ...(styleId ? { lastStyleUsed: styleId } : {}),
+      styleHistory: updatedHistory,
+    },
+  });
 
   await transitionTo(session.phoneNumber, 'IDLE', {
     currentOrderId: null,
@@ -144,28 +169,41 @@ async function handleLoveIt(
     imageMediaIds: [],
     imageStorageUrls: [],
   });
+
+  logger.info('Order completed — Love it feedback', {
+    phoneNumber: session.phoneNumber,
+    orderId: order?.id,
+    styleId,
+    newOrderCount: user.orderCount + 1,
+  });
 }
 
 async function handleMakeChange(
   session: Session,
-  _user: User,
+  user: User,
   wa: WhatsAppClient,
   lang: 'hi' | 'en',
 ): Promise<void> {
-  await wa.sendList(session.phoneNumber, msgAskWhatToChange(lang), lang === 'hi' ? 'Badlao chunein' : 'Pick a change', [
-    {
-      title: lang === 'hi' ? 'Options' : 'Options',
-      rows: [
-        { id: ButtonIds.EDIT_BACKGROUND, title: lang === 'hi' ? 'Background badlo' : 'Change background', description: lang === 'hi' ? 'Naya background lagayein' : 'Apply a new background' },
-        { id: ButtonIds.EDIT_LIGHTING, title: lang === 'hi' ? 'Roshni adjust karein' : 'Adjust lighting', description: lang === 'hi' ? 'Bright ya dark karein' : 'Brighter or darker' },
-        { id: ButtonIds.EDIT_STYLE, title: lang === 'hi' ? 'Style badlein' : 'Change style', description: lang === 'hi' ? 'Poori style badal dein' : 'Change the whole style' },
-        { id: ButtonIds.EDIT_CROP, title: lang === 'hi' ? 'Product zoom' : 'Zoom product', description: lang === 'hi' ? 'Product bada dikhayein' : 'Make product bigger' },
-        { id: ButtonIds.EDIT_OTHER, title: lang === 'hi' ? 'Kuch aur' : 'Something else', description: lang === 'hi' ? 'Text ya voice note bhejein' : 'Send text or voice note' },
-      ],
-    },
-  ]);
+  await wa.sendList(
+    session.phoneNumber,
+    lang === 'hi' ? 'Kya badlana hai?' : 'What would you like to change?',
+    lang === 'hi' ? 'Badlao chunein' : 'Pick a change',
+    [
+      {
+        title: lang === 'hi' ? 'Options' : 'Options',
+        rows: [
+          { id: 'edit_background', title: lang === 'hi' ? 'Background badlo' : 'Change background', description: lang === 'hi' ? 'Naya background lagayein' : 'Apply a new background' },
+          { id: 'edit_lighting', title: lang === 'hi' ? 'Roshni adjust karein' : 'Adjust lighting', description: lang === 'hi' ? 'Bright ya dark karein' : 'Brighter or darker' },
+          { id: 'edit_style', title: lang === 'hi' ? 'Style badlein' : 'Change style', description: lang === 'hi' ? 'Poori style badal dein' : 'Change the whole style' },
+          { id: 'edit_crop', title: lang === 'hi' ? 'Product zoom' : 'Zoom product', description: lang === 'hi' ? 'Product bada dikhayein' : 'Make product bigger' },
+          { id: 'edit_other', title: lang === 'hi' ? 'Kuch aur' : 'Something else', description: lang === 'hi' ? 'Text ya voice note bhejein' : 'Send text or voice note' },
+        ],
+      },
+    ],
+  );
 
-  await transitionTo(session.phoneNumber, 'AWAITING_EDIT');
+  // Stay in DELIVERED — the edit.ts handler will be called from DELIVERED
+  // when user responds with their edit choice
 }
 
 async function handleStartOver(
@@ -174,10 +212,14 @@ async function handleStartOver(
   wa: WhatsAppClient,
   lang: 'hi' | 'en',
 ): Promise<void> {
-  await wa.sendButtons(session.phoneNumber, msgStartOver(lang), [
-    { id: 'reuse_photo', title: lang === 'hi' ? 'Wahi photo' : 'Same photo' },
-    { id: 'new_photo', title: lang === 'hi' ? 'Nayi photo' : 'New photo' },
-  ]);
+  await wa.sendButtons(
+    session.phoneNumber,
+    lang === 'hi' ? 'Kaunsi photo use karein?' : 'Which photo would you like to use?',
+    [
+      { id: 'reuse_photo', title: lang === 'hi' ? 'Wahi photo' : 'Same photo' },
+      { id: 'new_photo', title: lang === 'hi' ? 'Nayi photo' : 'New photo' },
+    ],
+  );
 }
 
 // ---------------------------------------------------------------------------

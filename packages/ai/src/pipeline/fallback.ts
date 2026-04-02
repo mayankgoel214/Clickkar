@@ -74,9 +74,9 @@ export async function postProcessFinal(imageBuffer: Buffer, style?: string): Pro
     .modulate({ brightness: 1.01, saturation: config.satBoost })
     .toBuffer();
 
-  // 3. Chromatic aberration — real lenses have slight color fringing at edges
-  // Shift red channel 1px outward from center, blue 1px inward
-  result = await addChromaticAberration(result);
+  // 3. Chromatic aberration — DISABLED: extractChannel+joinChannel strips color
+  // TODO: fix using raw pixel buffer manipulation instead of sharp channel ops
+  // result = await addChromaticAberration(result);
 
   // 4. Vignette (if style uses it)
   if (config.vignette > 0) {
@@ -557,11 +557,109 @@ export async function createStudioShot(
 }
 
 // ===========================================================================
+// TRACK A: Inpaint studio shot background
+// ===========================================================================
+
+/**
+ * Replace the white background of a studio shot with a creative scene.
+ * Uses Flux Fill inpainting: the product stays untouched (masked as "keep"),
+ * the white background area gets replaced with the scene prompt.
+ *
+ * This solves the compositing problem: no floating products, no objects
+ * under the product, scene flows naturally around the product.
+ */
+export async function inpaintStudioBackground(
+  studioBuffer: Buffer,
+  cutoutBuffer: Buffer,
+  scenePrompt: string,
+): Promise<Buffer> {
+  ensureFalConfig();
+  const startMs = Date.now();
+  const CANVAS_SIZE = 1024;
+
+  // The cutout buffer from createStudioShot is already resized to 65% of canvas.
+  // We need to recreate the exact same position used in createStudioShot.
+  const cutMeta = await sharp(cutoutBuffer).metadata();
+  const cutW = cutMeta.width ?? 500;
+  const cutH = cutMeta.height ?? 500;
+
+  const left = Math.round((CANVAS_SIZE - cutW) / 2);
+  const top = Math.round(CANVAS_SIZE * 0.5 - cutH / 2);
+
+  // Create mask: product area = BLACK (keep), everything else = WHITE (generate)
+  // Extract alpha channel from cutout to get product shape
+  const alpha = await sharp(cutoutBuffer)
+    .ensureAlpha()
+    .extractChannel(3)
+    .toBuffer();
+
+  // Dilate the product area by 6px to create a safety buffer
+  // This prevents Flux from touching the product edges
+  const dilatedAlpha = await sharp(alpha)
+    .blur(3) // Gaussian blur acts as dilation
+    .threshold(20) // Re-binarize: anything touched by blur becomes solid
+    .negate() // Invert: product = BLACK (keep), background = WHITE (generate)
+    .png()
+    .toBuffer();
+
+  // Place the product mask at the exact position on the 1024x1024 canvas
+  const mask = await sharp({
+    create: { width: CANVAS_SIZE, height: CANVAS_SIZE, channels: 3, background: { r: 255, g: 255, b: 255 } },
+  })
+    .composite([{ input: dilatedAlpha, left, top, blend: 'multiply' }])
+    .png()
+    .toBuffer();
+
+  // Convert studio shot to PNG for Flux (it's currently JPEG)
+  const studioPng = await sharp(studioBuffer)
+    .resize(CANVAS_SIZE, CANVAS_SIZE, { fit: 'fill' })
+    .png()
+    .toBuffer();
+
+  const [studioUrl, maskUrl] = await Promise.all([
+    uploadToStorage(studioPng, `studio_inpaint_${Date.now()}.png`, 'image/png'),
+    uploadToStorage(mask, `studio_mask_${Date.now()}.png`, 'image/png'),
+  ]);
+
+  const safePrompt = `${scenePrompt}, photorealistic, no text, no words, no letters, no numbers, no watermarks, professional product advertisement photograph, shot on 85mm lens`;
+
+  console.info(JSON.stringify({ event: 'studio_inpaint_start', promptPreview: safePrompt.slice(0, 120) }));
+
+  const result = (await withTimeout(
+    fal.subscribe(FLUX_INPAINT_MODEL as string, {
+      input: {
+        image_url: studioUrl,
+        mask_url: maskUrl,
+        prompt: safePrompt,
+        safety_tolerance: '2',
+      },
+      logs: false,
+    }),
+    120_000,
+    'Studio background inpainting',
+  )) as {
+    data: { images?: Array<{ url: string }>; image?: { url: string } };
+  };
+
+  const outputUrl = result.data?.images?.[0]?.url ?? result.data?.image?.url ?? null;
+  if (!outputUrl) throw new Error('Studio inpainting returned no output');
+
+  const outputBuffer = await downloadBuffer(outputUrl);
+  const finalBuffer = await sharp(outputBuffer)
+    .resize(CANVAS_SIZE, CANVAS_SIZE, { fit: 'fill' })
+    .jpeg({ quality: 95, mozjpeg: true })
+    .toBuffer();
+
+  console.info(JSON.stringify({ event: 'studio_inpaint_complete', durationMs: Date.now() - startMs }));
+  return finalBuffer;
+}
+
+// ===========================================================================
 // PHASE B-1: Generate reference scene via Seedream
 // ===========================================================================
 
 // ===========================================================================
-// TRACK A: Background-only scene generation + harmonized compositing
+// Legacy: Background-only scene generation + harmonized compositing (kept for fallback)
 // ===========================================================================
 
 /**
@@ -591,7 +689,7 @@ export async function generateBackgroundOnlyScene(
     uploadToStorage(mask, `bgmask_${Date.now()}.png`, 'image/png'),
   ]);
 
-  const safePrompt = `${backgroundPrompt}, photorealistic, no text, no words, no letters, no numbers, no watermarks, no product reflections or shadows (those will be added separately), clean photographic image`;
+  const safePrompt = `${backgroundPrompt}, the CENTER of the image must be COMPLETELY EMPTY with just the flat surface visible — no objects no cups no bowls no props in the center, all props and decorative elements must be at the EDGES and CORNERS only, photorealistic, no text, no words, no letters, no numbers, no watermarks, clean photographic image`;
 
   console.info(JSON.stringify({ event: 'bg_only_start', promptPreview: safePrompt.slice(0, 120) }));
 
@@ -615,6 +713,101 @@ export async function generateBackgroundOnlyScene(
 
   console.info(JSON.stringify({ event: 'bg_only_complete', durationMs: Date.now() - startMs }));
   return finalBg;
+}
+
+/**
+ * Generate a scene (including a person) AROUND the preserved product cutout.
+ * Uses Flux inpainting: product pixels are in the "keep" zone of the mask,
+ * everything else (person, background) is generated.
+ *
+ * This is the key to "With Model" — the real product is preserved pixel-perfect
+ * while Flux generates a photorealistic person holding/interacting with it.
+ */
+export async function generateSceneAroundProduct(
+  cutoutBuffer: Buffer,
+  scenePrompt: string,
+): Promise<Buffer> {
+  ensureFalConfig();
+  const startMs = Date.now();
+  const CANVAS_SIZE = 1024;
+
+  const cutMeta = await sharp(cutoutBuffer).metadata();
+  const cutW = cutMeta.width ?? 500;
+  const cutH = cutMeta.height ?? 500;
+
+  // Scale product to fill ~55% of canvas — product is the HERO
+  const maxDim = Math.round(CANVAS_SIZE * 0.55);
+  const scale = Math.min(maxDim / cutW, maxDim / cutH);
+  const scaledW = Math.round(cutW * scale);
+  const scaledH = Math.round(cutH * scale);
+
+  const resizedCutout = await sharp(cutoutBuffer)
+    .resize(scaledW, scaledH, { kernel: 'lanczos3' })
+    .png()
+    .toBuffer();
+
+  // Center horizontally, position in lower half (sitting on a surface)
+  const left = Math.round((CANVAS_SIZE - scaledW) / 2);
+  const top = Math.round(CANVAS_SIZE * 0.50 - scaledH / 2);
+
+  // Canvas: neutral gray background with product placed on it
+  // Gray tells Flux "generate something here" without biasing toward light or dark
+  const canvas = await sharp({
+    create: { width: CANVAS_SIZE, height: CANVAS_SIZE, channels: 4, background: { r: 160, g: 160, b: 160, alpha: 255 } },
+  })
+    .composite([{ input: resizedCutout, left, top, blend: 'over' }])
+    .png()
+    .toBuffer();
+
+  // Mask: WHITE = generate (person + background), BLACK = keep (product)
+  const alphaChannel = await sharp(resizedCutout)
+    .ensureAlpha()
+    .extractChannel(3)
+    .toBuffer();
+
+  const productMask = await sharp(alphaChannel)
+    .negate() // product area becomes black (keep)
+    .png()
+    .toBuffer();
+
+  const mask = await sharp({
+    create: { width: CANVAS_SIZE, height: CANVAS_SIZE, channels: 3, background: { r: 255, g: 255, b: 255 } },
+  })
+    .composite([{ input: productMask, left, top, blend: 'multiply' }])
+    .png()
+    .toBuffer();
+
+  const [canvasUrl, maskUrl] = await Promise.all([
+    uploadToStorage(canvas, `model_canvas_${Date.now()}.png`, 'image/png'),
+    uploadToStorage(mask, `model_mask_${Date.now()}.png`, 'image/png'),
+  ]);
+
+  const safePrompt = `${scenePrompt}, photorealistic photograph, ABSOLUTELY NO TEXT anywhere in the image, no words, no letters, no numbers, no watermarks, no signs, no writing, no captions, no labels except on the product itself, clean professional product advertisement, shot on 85mm f/2.8 lens, shallow depth of field`;
+
+  console.info(JSON.stringify({ event: 'with_model_inpaint_start', promptPreview: safePrompt.slice(0, 120) }));
+
+  const result = (await withTimeout(
+    fal.subscribe(FLUX_INPAINT_MODEL as string, {
+      input: {
+        image_url: canvasUrl,
+        mask_url: maskUrl,
+        prompt: safePrompt,
+        safety_tolerance: '2',
+      },
+      logs: false,
+    }),
+    120_000,
+    'With Model inpainting',
+  )) as {
+    data: { images?: Array<{ url: string }>; image?: { url: string } };
+  };
+
+  const outputUrl = result.data?.images?.[0]?.url ?? result.data?.image?.url ?? null;
+  if (!outputUrl) throw new Error('With Model inpainting returned no output');
+
+  const outputBuffer = await downloadBuffer(outputUrl);
+  console.info(JSON.stringify({ event: 'with_model_inpaint_complete', durationMs: Date.now() - startMs }));
+  return outputBuffer;
 }
 
 /**

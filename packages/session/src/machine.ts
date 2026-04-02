@@ -1,5 +1,9 @@
 /**
- * Session state machine — the main message router.
+ * Session state machine — V2 streamlined flow.
+ *
+ * States: IDLE → SETUP_NAME → SETUP_CATEGORY → SETUP_STYLE →
+ *         SETUP_INSTRUCTIONS → AWAITING_PHOTO → AWAITING_PAYMENT →
+ *         PROCESSING → DELIVERED → EDIT_PROCESSING
  *
  * Every incoming WhatsApp message passes through handleIncomingMessage(),
  * which looks up the session state and dispatches to the correct handler.
@@ -12,14 +16,21 @@ import type { MessageContext } from './types.js';
 import { logger } from './logger.js';
 
 // Handlers
-import { handleIdle, handleOnboardingWelcome, handleOnboardingName, handleOnboardingCategory, handleOnboardingConsent } from './handlers/onboarding.js';
-import { handleAwaitingImages } from './handlers/images.js';
-import { handleAwaitingStyle } from './handlers/style.js';
-import { handleAwaitingVoice } from './handlers/voice.js';
-import { handleConfirming } from './handlers/confirmation.js';
+import {
+  handleIdle,
+  handleSetupLanguage,
+  handleSetupName,
+  handleSetupCategory,
+} from './handlers/onboarding.js';
+import { handleSetupStyle } from './handlers/style.js';
+import { handleAwaitingPhoto } from './handlers/images.js';
 import { handleAwaitingPayment } from './handlers/payment.js';
 import { handleDelivered } from './handlers/delivery.js';
 import { handleAwaitingEdit, handleEditProcessing } from './handlers/edit.js';
+import {
+  msgProcessingStuck,
+  msgGenericError,
+} from './messages.js';
 
 // ---------------------------------------------------------------------------
 // Main entry point
@@ -30,7 +41,7 @@ export async function handleIncomingMessage(
   message: MessageContext,
   wa: WhatsAppClient,
 ): Promise<void> {
-  // 1. Idempotency check — skip if already processed
+  // 1. Idempotency check
   const existing = await prisma.processedMessage.findUnique({
     where: { messageId: message.messageId },
   });
@@ -56,7 +67,6 @@ export async function handleIncomingMessage(
       cswExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
     });
   } else {
-    // Update timestamps on every message
     await prisma.session.update({
       where: { phoneNumber },
       data: {
@@ -79,58 +89,57 @@ export async function handleIncomingMessage(
         await handleIdle(session, user, message, wa);
         break;
 
-      case 'ONBOARDING_WELCOME':
-        await handleOnboardingWelcome(session, user, message, wa);
+      case 'SETUP_LANGUAGE':
+        await handleSetupLanguage(session, user, message, wa);
         break;
 
-      case 'ONBOARDING_NAME':
-        await handleOnboardingName(session, user, message, wa);
+      case 'SETUP_NAME':
+        await handleSetupName(session, user, message, wa);
         break;
 
-      case 'ONBOARDING_CATEGORY':
-        await handleOnboardingCategory(session, user, message, wa);
+      case 'SETUP_CATEGORY':
+        await handleSetupCategory(session, user, message, wa);
         break;
 
-      case 'ONBOARDING_CONSENT':
-        await handleOnboardingConsent(session, user, message, wa);
+      case 'SETUP_STYLE':
+        await handleSetupStyle(session, user, message, wa);
         break;
 
-      case 'AWAITING_IMAGES':
-        await handleAwaitingImages(session, user, message, wa);
-        break;
-
-      case 'AWAITING_STYLE':
-        await handleAwaitingStyle(session, user, message, wa);
-        break;
-
-      case 'AWAITING_VOICE':
-        await handleAwaitingVoice(session, user, message, wa);
-        break;
-
-      case 'CONFIRMING':
-        await handleConfirming(session, user, message, wa);
+      case 'AWAITING_PHOTO':
+        await handleAwaitingPhoto(session, user, message, wa);
         break;
 
       case 'AWAITING_PAYMENT':
         await handleAwaitingPayment(session, user, message, wa);
         break;
 
-      case 'PROCESSING':
-        // User sent something while processing — just acknowledge
-        await wa.sendText(
-          phoneNumber,
-          user.language === 'hi'
-            ? 'Aapki photo process ho rahi hai — bas thoda wait karein!'
-            : 'Your photo is being processed — just a moment!',
-        );
+      case 'PROCESSING': {
+        // Auto-recovery: if stuck for >5 minutes, reset to IDLE
+        const stuckMinutes = session.stateEnteredAt
+          ? (Date.now() - new Date(session.stateEnteredAt).getTime()) / 60_000
+          : 0;
+
+        if (stuckMinutes > 5) {
+          await prisma.session.update({
+            where: { id: session.id },
+            data: { state: 'IDLE', stateEnteredAt: new Date() },
+          });
+          const lang = (user.language === 'en' ? 'en' : 'hi') as 'hi' | 'en';
+          await wa.sendText(phoneNumber, msgProcessingStuck(lang));
+        } else {
+          const lang = (user.language === 'en' ? 'en' : 'hi') as 'hi' | 'en';
+          await wa.sendText(
+            phoneNumber,
+            lang === 'hi'
+              ? 'Aapki photo process ho rahi hai — bas thoda wait karein!'
+              : 'Your photo is being processed — just a moment!',
+          );
+        }
         break;
+      }
 
       case 'DELIVERED':
         await handleDelivered(session, user, message, wa);
-        break;
-
-      case 'AWAITING_EDIT':
-        await handleAwaitingEdit(session, user, message, wa);
         break;
 
       case 'EDIT_PROCESSING':
@@ -143,18 +152,16 @@ export async function handleIncomingMessage(
         await handleIdle(session, user, message, wa);
     }
   } catch (err) {
-    logger.error('Handler error', { error: String(err), phoneNumber, state: session.state });
+    logger.error('Handler error', {
+      error: String(err),
+      phoneNumber,
+      state: session.state,
+    });
 
-    // Send a friendly error message
     try {
-      await wa.sendText(
-        phoneNumber,
-        user.language === 'hi'
-          ? 'Kuch gadbad ho gayi. Thodi der mein dobara try karein.'
-          : 'Something went wrong. Please try again in a moment.',
-      );
+      const lang = (user.language === 'en' ? 'en' : 'hi') as 'hi' | 'en';
+      await wa.sendText(phoneNumber, msgGenericError(lang));
     } catch {
-      // Can't even send error message — just log
       logger.error('Failed to send error message', { phoneNumber });
     }
   }

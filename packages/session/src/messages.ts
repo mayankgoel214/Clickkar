@@ -1,236 +1,167 @@
 /**
- * All bot message templates.
- * Every exported function takes language ('hi' | 'en') and returns a string.
- * Messages are kept short — max 3 lines.
+ * All bot message templates — streamlined V2 flow.
+ * Quick-fire: details before photo, minimal messages.
  */
 
 type Lang = 'hi' | 'en';
 
 // ---------------------------------------------------------------------------
-// ONBOARDING
+// SETUP (first-time onboarding — 3 messages total)
 // ---------------------------------------------------------------------------
 
-export function msgWelcome(lang: Lang): string {
+export function msgWelcomeAndAskName(lang: Lang): string {
   if (lang === 'hi') {
-    return 'Namaste! 🙏 Clickkar mein aapka swagat hai.\nAapka product photo 60 second mein professional bana denge.\nPehli baar bilkul free!';
+    return 'Namaste! Clickkar mein swagat hai.\nAapke product ki photo professional bana denge — Rs 99, 60 second mein.\nPehli baar bilkul free!\n\nAapka naam bataiye?';
   }
-  return 'Welcome to Clickkar! 🙏\nWe turn your product photo professional in 60 seconds.\nFirst photo is completely free!';
+  return 'Welcome to Clickkar!\nWe make your product photos professional — Rs 99, 60 seconds.\nFirst one is completely free!\n\nWhat\'s your name?';
 }
 
-export function msgAskLanguage(_lang: Lang): string {
-  // Always shown in both languages — before language is set
-  return 'Kaunsi bhasha mein baat karein?\nWhich language would you prefer?';
+export function msgGreetAndAskCategory(lang: Lang, name: string): string {
+  if (lang === 'hi') {
+    return `Shukriya, ${name} ji!\nAap kaunsa product bechte hain?`;
+  }
+  return `Thanks, ${name}!\nWhat kind of product do you sell?`;
 }
 
-export function msgAskIfSeller(lang: Lang): string {
+export function msgAskStyle(lang: Lang, name: string, recommendedStyleName?: string): string {
+  const rec = recommendedStyleName ? `\n${recommendedStyleName} best rahega.` : '';
   if (lang === 'hi') {
-    return 'Kya aap online kuch bechte hain?\nYa sirf dekhne aaye hain?';
+    return `${name} ji, kaunsa style chahiye?${rec}`;
   }
-  return 'Do you sell products online?\nOr just checking us out?';
+  return `${name}, which style would you like?${rec ? `\n${recommendedStyleName} works best for your products.` : ''}`;
 }
 
-export function msgShowDemo(lang: Lang): string {
+export function msgAskInstructionsAndPhoto(lang: Lang): string {
   if (lang === 'hi') {
-    return 'Dekho! Yeh wahi photo hai — pehle aur baad mein.\nPehli photo free, uske baad sirf Rs 99/photo.\nShuru karein?';
+    return 'Kuch special batana hai? Text ya voice note bhejein.\nYa seedha product ki photo bhejiye.';
   }
-  return 'See the difference — before and after!\nFirst photo free, then Rs 99/photo.\nReady to start?';
+  return 'Anything special? Send text or a voice note.\nOr just send your product photo.';
 }
 
-export function msgAskName(lang: Lang): string {
+export function msgInstructionsReceived(lang: Lang): string {
   if (lang === 'hi') {
-    return 'Aapka naam kya hai?\n(Bas pehla naam kaafi hai)';
+    return 'Samajh gaya! Ab photo bhejiye.';
   }
-  return 'What is your name?\n(First name is fine)';
-}
-
-export function msgAskCategory(lang: Lang): string {
-  if (lang === 'hi') {
-    return 'Aap kaunsa product bechte hain?\nNeeche se chuniye:';
-  }
-  return 'What kind of product do you sell?\nChoose from the list:';
-}
-
-export function msgDpppConsent(lang: Lang): string {
-  if (lang === 'hi') {
-    return 'Aapki photo sirf order process karne ke liye use hogi.\nHum kisi ke saath share nahi karte. Privacy 100% safe hai.';
-  }
-  return 'Your photos are only used to process your order.\nWe never share them. Your privacy is 100% safe.';
-}
-
-export function msgOnboardingComplete(lang: Lang): string {
-  if (lang === 'hi') {
-    return 'Badiya! Ab apne product ki photo bhejiye. 📸\nEk ya zyada photos bhej sakte hain (max 5).';
-  }
-  return 'Great! Now send your product photo. 📸\nYou can send up to 5 photos at once.';
+  return 'Got it! Now send your photo.';
 }
 
 // ---------------------------------------------------------------------------
-// PHOTO TIPS
+// RETURNING USER
 // ---------------------------------------------------------------------------
 
-export function msgPhotoTipJewellery(lang: Lang): string {
+export function msgWelcomeBackWithStyle(lang: Lang, name: string, styleName: string): string {
   if (lang === 'hi') {
-    return 'Tip: Jewellery ko seedha ya thoda angle pe rakhein.\nClose-up lein jisse detail dikhe.\nSaaf safed background best hai.';
+    return `Wapas aao, ${name} ji!\nPichli baar ${styleName} use kiya tha. Wahi style?`;
   }
-  return 'Tip: Place jewellery straight on or at a slight angle.\nGet a close-up to show detail.\nA clean white background works best.';
+  return `Welcome back, ${name}!\nLast time you used ${styleName}. Same style?`;
 }
 
-export function msgPhotoTipFood(lang: Lang): string {
+export function msgWelcomeBackNoStyle(lang: Lang, name: string): string {
   if (lang === 'hi') {
-    return 'Tip: Upar se photo lein (overhead) ya 45° angle.\nTexture aur color dikhaiye.\nKhidki ke paas natural light use karein.';
+    return `Wapas aao, ${name} ji!\nNaya photo banwana hai?`;
   }
-  return 'Tip: Shoot from above (overhead) or at 45°.\nShow texture and colour.\nUse natural light near a window.';
+  return `Welcome back, ${name}!\nReady for a new product photo?`;
 }
 
-export function msgPhotoTipGarment(lang: Lang): string {
+export function msgSendPhoto(lang: Lang): string {
   if (lang === 'hi') {
-    return 'Tip: Kapde ko flat rakhein ya hanger pe latkaayein.\nPoori garment frame mein aani chahiye.\nSaaf background use karein.';
+    return 'Photo bhejiye — 5 tak bhej sakte hain.';
   }
-  return 'Tip: Lay flat or hang on a hanger.\nFull garment should be in frame.\nUse a plain background.';
-}
-
-export function msgPhotoTipSkincare(lang: Lang): string {
-  if (lang === 'hi') {
-    return 'Tip: Bottle ka label seedha camera ki taraf hona chahiye.\nThoda angle dein jisse shape dikhe.\nSoft lighting best hai.';
-  }
-  return 'Tip: Point the label straight at the camera.\nA slight angle shows the product shape.\nSoft lighting works best.';
-}
-
-export function msgPhotoTipCandle(lang: Lang): string {
-  if (lang === 'hi') {
-    return 'Tip: Wick aur vessel ka shape dikhaye.\nThoda 3/4 angle use karein.\nWarm background accha lagta hai.';
-  }
-  return 'Tip: Show the wick and vessel shape.\nUse a slight 3/4 angle.\nA warm background looks great.';
-}
-
-export function msgPhotoTipBag(lang: Lang): string {
-  if (lang === 'hi') {
-    return 'Tip: 3/4 angle se photo lein — front pocket aur handle dono dikhen.\nBag ko stuffed rakhein shape ke liye.\nSaaf background use karein.';
-  }
-  return 'Tip: Use a 3/4 angle — show the front pocket and handle.\nStuff the bag lightly to hold its shape.\nUse a clean background.';
-}
-
-export function msgPhotoTipGeneral(lang: Lang): string {
-  if (lang === 'hi') {
-    return 'Tip: Product poora frame mein aana chahiye.\nSaaf background use karein.\nAcha lighting use karein.';
-  }
-  return 'Tip: Make sure the full product is in frame.\nUse a plain background.\nGood lighting makes a big difference.';
-}
-
-export function msgCleanLensTip(lang: Lang): string {
-  if (lang === 'hi') {
-    return 'Pehle camera ka lens saaf kar lein!\nCapde se ek baar pochh lein — photo aur bhi acchi aayegi.';
-  }
-  return 'Quick tip: wipe your camera lens first!\nA clean lens makes photos much sharper.';
+  return 'Send your photo — up to 5 at once.';
 }
 
 // ---------------------------------------------------------------------------
-// IMAGE FLOW
+// PHOTO RECEIVED
 // ---------------------------------------------------------------------------
 
-export function msgImageReceived(lang: Lang): string {
-  if (lang === 'hi') {
-    return 'Photo mil gayi! ✅\nAur photos bhejein, ya style chunne ke liye rukein.';
+export function msgPhotoReceived(lang: Lang, count: number): string {
+  if (count === 1) {
+    if (lang === 'hi') return 'Photo mil gayi! Aur bhejein (max 5) ya thodi der rukein.';
+    return 'Photo received! Send more (max 5) or wait a moment.';
   }
-  return 'Photo received! ✅\nSend more, or wait to choose your style.';
+  if (lang === 'hi') return `${count} photos mil gayi!`;
+  return `${count} photos received!`;
 }
 
-export function msgAskStyle(lang: Lang): string {
-  if (lang === 'hi') {
-    return 'Kaunsa style chahiye aapko?\nNeeche se chuniye:';
-  }
-  return 'Which style would you like?\nChoose from the list below:';
-}
-
-export function msgAskVoice(lang: Lang): string {
-  if (lang === 'hi') {
-    return 'Kuch khaas batana chahte hain?\nVoice note ya text mein batayein — ya Skip karein.';
-  }
-  return 'Anything special to add?\nSend a voice note or text — or tap Skip.';
-}
-
-export function msgOrderSummary(
+export function msgPhotoReceivedWithPayment(
   lang: Lang,
+  name: string,
   imageCount: number,
-  style: string,
-  totalPaise: number,
+  styleName: string,
+  totalRs: number,
 ): string {
-  const totalRs = totalPaise / 100;
-  if (lang === 'hi') {
-    return `Aapka order:\n📸 ${imageCount} photo • Style: ${style}\n💰 Total: Rs ${totalRs}`;
+  const photoText = imageCount > 1 ? `${imageCount} photos` : '1 photo';
+  if (totalRs === 0) {
+    if (lang === 'hi') {
+      return `Photo mil gayi, ${name} ji!\n${photoText} • ${styleName}\nPehli baar free hai! Rs 0`;
+    }
+    return `Photo received, ${name}!\n${photoText} • ${styleName}\nYour first one is free! Rs 0`;
   }
-  return `Your order:\n📸 ${imageCount} photo(s) • Style: ${style}\n💰 Total: Rs ${totalRs}`;
+  if (lang === 'hi') {
+    return `Photo mil gayi, ${name} ji!\n${photoText} • ${styleName}\nRs ${totalRs} ka payment karein.`;
+  }
+  return `Photo received, ${name}!\n${photoText} • ${styleName}\nPay Rs ${totalRs} to get started.`;
 }
 
-export function msgConfirmOrder(lang: Lang): string {
+// ---------------------------------------------------------------------------
+// RETURNING USER + PHOTO (confirm style)
+// ---------------------------------------------------------------------------
+
+export function msgConfirmStyleForPhoto(lang: Lang, name: string, styleName: string): string {
   if (lang === 'hi') {
-    return 'Sab theek hai? Order confirm karein ya style badlein.';
+    return `Photo mil gayi, ${name} ji!\n${styleName} style lagayein?`;
   }
-  return 'All good? Confirm your order or change the style.';
+  return `Got your photo, ${name}!\nUse ${styleName} style?`;
 }
 
 // ---------------------------------------------------------------------------
 // PAYMENT
 // ---------------------------------------------------------------------------
 
-export function msgPaymentRequest(lang: Lang, totalRs: number): string {
+export function msgPaymentConfirmed(lang: Lang): string {
   if (lang === 'hi') {
-    return `Rs ${totalRs} ka payment karein neeche diye button se.\nUPI, card, netbanking — sab chalega.`;
+    return 'Payment mil gayi! Aapki photo banana shuru kar rahe hain...';
   }
-  return `Please pay Rs ${totalRs} using the button below.\nUPI, card, or netbanking — all accepted.`;
+  return 'Payment received! Starting to process your photo now...';
+}
+
+export function msgProcessingStarted(lang: Lang): string {
+  if (lang === 'hi') {
+    return 'Kaam shuru! 60 second mein ready.';
+  }
+  return 'Processing started! Ready in about 60 seconds.';
 }
 
 export function msgPaymentPending(lang: Lang): string {
   if (lang === 'hi') {
-    return 'Payment mein koi problem? 🤔\nLink fir se bhejein? Ya koi help chahiye?';
+    return 'Payment abhi tak nahi aayi. Link fir se bhejein?';
   }
-  return 'Having trouble with payment? 🤔\nShall I resend the link? Or need help?';
-}
-
-export function msgPaymentAbandoned(lang: Lang): string {
-  if (lang === 'hi') {
-    return 'Koi baat nahi! Jab bhi ready hon, wapas aa jaana. 😊\nAapka order save hai.';
-  }
-  return "No worries! Come back whenever you're ready. 😊\nYour order is saved.";
+  return 'Payment not received yet. Shall I resend the link?';
 }
 
 export function msgPaymentFailed(lang: Lang): string {
   if (lang === 'hi') {
-    return 'Payment fail ho gayi. 😕\nEk baar aur try karein — link fir se bhej raha hun.';
+    return 'Payment fail ho gayi. Ek aur try karein — link fir se bhej raha hun.';
   }
-  return 'Payment failed. 😕\nPlease try again — sending the link once more.';
-}
-
-export function msgPaymentWebhookDelay(lang: Lang): string {
-  if (lang === 'hi') {
-    return 'Payment confirm ho raha hai... ⏳\nEk minute mein update milega.';
-  }
-  return 'Confirming your payment... ⏳\nYou will get an update in a minute.';
-}
-
-export function msgPaymentConfirmed(lang: Lang): string {
-  if (lang === 'hi') {
-    return 'Payment mil gayi! ✅\nAb aapki photo banana shuru karte hain...';
-  }
-  return 'Payment received! ✅\nStarting to process your photo now...';
+  return 'Payment failed. Try again — sending the link once more.';
 }
 
 // ---------------------------------------------------------------------------
 // PROCESSING
 // ---------------------------------------------------------------------------
 
-export function msgProcessingStarted(lang: Lang): string {
-  if (lang === 'hi') {
-    return 'Kaam shuru ho gaya! ⚡\n60 second mein ready ho jaayegi.';
-  }
-  return 'Processing started! ⚡\nWill be ready in about 60 seconds.';
-}
-
 export function msgProcessingDelay(lang: Lang): string {
   if (lang === 'hi') {
-    return 'Thoda aur time lag raha hai... 🔄\nAbhi bhi kaam chal raha hai, bas 1-2 minute aur.';
+    return 'Thoda aur time lag raha hai... bas 1-2 minute aur.';
   }
-  return 'Taking a little longer than usual... 🔄\nStill working — just 1-2 more minutes.';
+  return 'Taking a bit longer... just 1-2 more minutes.';
+}
+
+export function msgProcessingStuck(lang: Lang): string {
+  if (lang === 'hi') {
+    return 'Maaf kijiye, processing mein dikkat aayi. Photo dobara bhejein.';
+  }
+  return 'Sorry, there was an issue with processing. Please send your photo again.';
 }
 
 // ---------------------------------------------------------------------------
@@ -239,143 +170,78 @@ export function msgProcessingDelay(lang: Lang): string {
 
 export function msgImageDelivered(lang: Lang, userName?: string, index?: number, total?: number): string {
   const name = userName ? `${userName} ji` : '';
-  const counter = index && total ? ` (${index}/${total})` : '';
+  const counter = index && total && total > 1 ? ` (${index}/${total})` : '';
   if (lang === 'hi') {
-    return `Taiyaar hai${name ? ', ' + name : ''}! ✨${counter}\nAapki professional product photo ready hai.`;
+    return `Taiyaar hai${name ? ', ' + name : ''}!${counter}\nAapki professional product photo ready hai.`;
   }
-  return `Here it is${name ? ', ' + name : ''}! ✨${counter}\nYour professional product photo is ready.`;
+  return `Here it is${name ? ', ' + name : ''}!${counter}\nYour professional product photo is ready.`;
 }
 
 export function msgAskFeedback(lang: Lang): string {
   if (lang === 'hi') {
-    return 'Kaise lagi photo? 😊\nNeeche se bataiye:';
+    return 'Kaise lagi? Neeche se bataiye:';
   }
-  return 'How does it look? 😊\nLet us know below:';
+  return 'How does it look? Let us know:';
 }
 
-export function msgThankYou(lang: Lang, _userName?: string): string {
-  if (lang === 'hi') {
-    return 'Bahut shukriya! 🙏\nApne doston ko Clickkar ke baare mein batayein aur unhe bhi free photo dilaayein!';
+export function msgThankYou(lang: Lang, isFirstOrder: boolean): string {
+  if (isFirstOrder) {
+    if (lang === 'hi') {
+      return 'Bahut shukriya!\nAgle baar sirf Rs 99 mein. Worth it?';
+    }
+    return 'Thank you!\nNext one is just Rs 99. Worth it?';
   }
-  return 'Thank you so much! 🙏\nTell your friends about Clickkar and get them a free photo too!';
+  if (lang === 'hi') {
+    return 'Shukriya! Doston ko bhi Clickkar ke baare mein batayein.';
+  }
+  return 'Thank you! Tell your friends about Clickkar.';
 }
 
 // ---------------------------------------------------------------------------
 // EDIT
 // ---------------------------------------------------------------------------
 
-export function msgAskWhatToChange(lang: Lang): string {
-  if (lang === 'hi') {
-    return 'Kya badlana chahte hain?\nNeeche se chuniye:';
-  }
-  return 'What would you like to change?\nChoose from the list:';
-}
-
-export function msgStartOver(lang: Lang): string {
-  if (lang === 'hi') {
-    return 'Koi baat nahi! Nayi style se shuru karte hain.\nWahi photo use karein ya nayi bhejein?';
-  }
-  return 'No problem! Let\'s start fresh.\nUse the same photo or send a new one?';
-}
-
 export function msgEditProcessing(lang: Lang): string {
   if (lang === 'hi') {
-    return 'Naya background laga raha hun... 🔄\nThodi der mein ready ho jaayega.';
+    return 'Badlav kar raha hun... thodi der mein ready.';
   }
-  return 'Applying your changes... 🔄\nWill be ready shortly.';
-}
-
-export function msgEditDelivered(lang: Lang): string {
-  if (lang === 'hi') {
-    return 'Naya version ready hai! ✨\nKaisa laga baar?';
-  }
-  return 'Updated version ready! ✨\nHow does this look?';
+  return 'Applying your changes... ready shortly.';
 }
 
 export function msgRevisionLimitReached(lang: Lang): string {
   if (lang === 'hi') {
-    return 'Free revision use ho gayi. 😊\nRs 29 mein yeh badlav hoga — payment karein?';
+    return 'Free revision use ho gayi. Rs 29 mein yeh badlav hoga?';
   }
-  return 'Free revisions used up. 😊\nThis change costs Rs 29 — shall we proceed?';
+  return 'Free revisions used up. This change costs Rs 29.';
 }
 
 // ---------------------------------------------------------------------------
-// RETURNING USER
-// ---------------------------------------------------------------------------
-
-export function msgWelcomeBack(lang: Lang, name: string): string {
-  if (lang === 'hi') {
-    return `Wapas aao, ${name} ji! 😊\nNaya product photo banwana hai?`;
-  }
-  return `Welcome back, ${name}! 😊\nReady to create another product photo?`;
-}
-
-// ---------------------------------------------------------------------------
-// ERROR
+// ERRORS
 // ---------------------------------------------------------------------------
 
 export function msgUnknownMessage(lang: Lang): string {
   if (lang === 'hi') {
-    return 'Main samajh nahi paaya. 🤔\nPhoto bhejein ya neeche se option chuniye.';
+    return 'Samajh nahi aaya. Photo bhejein ya option chuniye.';
   }
-  return "I didn't understand that. 🤔\nSend a photo or choose an option below.";
-}
-
-export function msgPhotoTooBlurry(lang: Lang): string {
-  if (lang === 'hi') {
-    return 'Photo thodi blur hai. 📸\nKya aap ek aur clear photo bhej sakte hain?';
-  }
-  return 'This photo is a bit blurry. 📸\nCould you send a clearer one?';
-}
-
-export function msgPhotoTooDark(lang: Lang): string {
-  if (lang === 'hi') {
-    return 'Photo mein roshni kam hai. 💡\nKhidki ke paas ya light ke saamne photo lein.';
-  }
-  return 'The photo is too dark. 💡\nTry near a window or under good light.';
-}
-
-export function msgPhotoNoProduct(lang: Lang): string {
-  if (lang === 'hi') {
-    return 'Product photo mein nahi dikha. 🔍\nProduct ko frame ke beech rakhein aur dobara bhejein.';
-  }
-  return 'Could not find a product in this photo. 🔍\nPlace the product in the centre and try again.';
+  return "Didn't catch that. Send a photo or choose an option.";
 }
 
 export function msgGenericError(lang: Lang): string {
   if (lang === 'hi') {
-    return 'Kuch gadbad ho gayi. 😕\nThodi der baad dobara try karein.';
+    return 'Kuch gadbad ho gayi. Thodi der baad try karein.';
   }
-  return 'Something went wrong. 😕\nPlease try again in a moment.';
+  return 'Something went wrong. Please try again in a moment.';
+}
+
+export function msgEarlyPhotoAck(lang: Lang): string {
+  if (lang === 'hi') {
+    return 'Photo save ho gayi! Pehle setup pura kar lein, phir process karenge.';
+  }
+  return 'Photo saved! Let me finish setup first, then we\'ll process it.';
 }
 
 // ---------------------------------------------------------------------------
-// MULTI-IMAGE
-// ---------------------------------------------------------------------------
-
-export function msgMultiImageReceived(lang: Lang, count: number): string {
-  if (lang === 'hi') {
-    return `${count} photos mil gayi! ✅\nAur bhejein ya style chunne ke liye rukein.`;
-  }
-  return `${count} photos received! ✅\nSend more or wait to choose your style.`;
-}
-
-export function msgAskSameOrDifferentStyle(lang: Lang): string {
-  if (lang === 'hi') {
-    return 'Kya sabhi photos ek hi style mein chahiye?\nYa alag-alag style?';
-  }
-  return 'Should all photos use the same style?\nOr different styles for each?';
-}
-
-export function msgBatchPricing(lang: Lang, count: number, totalRs: number): string {
-  if (lang === 'hi') {
-    return `${count} photos × Rs 99 = Rs ${totalRs}\nSabhi ek saath process hongi. 🚀`;
-  }
-  return `${count} photos × Rs 99 = Rs ${totalRs}\nAll will be processed together. 🚀`;
-}
-
-// ---------------------------------------------------------------------------
-// STYLE DISPLAY NAMES
+// STYLE & CATEGORY DISPLAY NAMES
 // ---------------------------------------------------------------------------
 
 export function styleDisplayName(styleId: string, lang: Lang): string {
@@ -387,13 +253,10 @@ export function styleDisplayName(styleId: string, lang: Lang): string {
     style_studio: { hi: 'Studio Look', en: 'Studio Look' },
     style_festive: { hi: 'Tyohar Style', en: 'Festive Style' },
     style_minimal: { hi: 'Minimal Saaf', en: 'Minimal & Clean' },
+    style_with_model: { hi: 'Model Ke Saath', en: 'With Model' },
   };
   return names[styleId]?.[lang] ?? styleId;
 }
-
-// ---------------------------------------------------------------------------
-// CATEGORY DISPLAY NAMES
-// ---------------------------------------------------------------------------
 
 export function categoryDisplayName(categoryId: string, lang: Lang): string {
   const names: Record<string, { hi: string; en: string }> = {

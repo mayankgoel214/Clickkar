@@ -1,6 +1,6 @@
 import { preprocessImage } from './preprocess.js';
 import { analyzeAndPlan, type AnalyzeAndPlanResult } from './product-analyzer.js';
-import { createStudioShot, generateBackgroundOnlyScene, harmonizedComposite, generateReferenceScene, postProcessFinal, addAILabel, refineWithKontext, restoreFaces, upscaleDownscale, uploadToStorage, downloadBuffer } from './fallback.js';
+import { createStudioShot, inpaintStudioBackground, generateReferenceScene, postProcessFinal, addAILabel, refineWithKontext, restoreFaces, upscaleDownscale, uploadToStorage, downloadBuffer } from './fallback.js';
 import { combinedQualityCheck } from '../qa/combined-qa.js';
 import type { ProductAnalysis } from './product-analyzer.js';
 
@@ -111,9 +111,11 @@ export async function processProductImage(
   // Use branding confidence to make routing decision — if uncertain, preserve product (Track A)
   const hasBranding = plan.hasBranding || plan.brandingConfidence >= 0.3;
 
-  // "With Model" ALWAYS uses Track B — person + product must be generated together
-  const forceTrackB = params.style === 'style_with_model';
-  const useTrackA = hasBranding && !forceTrackB;
+  // With Model uses Track B (Seedream full generation) — best person quality for now
+  // TODO: Implement hybrid approach (inpainting for small products, Seedream for large)
+  const isWithModel = params.style === 'style_with_model';
+  const forceTrackB = !hasBranding || isWithModel;
+  const useTrackA = hasBranding && !isWithModel;
 
   console.info(JSON.stringify({
     event: 'pipeline_routed',
@@ -174,13 +176,17 @@ export async function processProductImage(
       console.info(JSON.stringify({ event: 'retry_with_fixes', attempt, fixCount: fixes.length, fixes }));
     }
 
-    if (useTrackA) {
-      // ===== TRACK A: Branded product — preserve real product =====
+    if (params.style === 'style_clean_white' || params.style === 'style_studio') {
+      // ===== CLEAN WHITE / STUDIO: Use studio shot directly — no Flux needed =====
+      console.info(JSON.stringify({ event: 'studio_direct', attempt }));
+      adBuffer = studioBuffer;
+    } else if (useTrackA) {
+      // ===== TRACK A: Inpaint studio shot background =====
+      // Product stays on canvas, Flux replaces ONLY the white background with the scene.
       try {
-        console.info(JSON.stringify({ event: 'track_a_bg_only_start', attempt }));
-        const bgScene = await generateBackgroundOnlyScene(currentBgPrompt);
-        adBuffer = await harmonizedComposite(cutoutBuffer, bgScene);
-        console.info(JSON.stringify({ event: 'track_a_complete', attempt }));
+        console.info(JSON.stringify({ event: 'track_a_inpaint_start', attempt }));
+        adBuffer = await inpaintStudioBackground(studioBuffer, cutoutBuffer, currentScenePrompt);
+        console.info(JSON.stringify({ event: 'track_a_inpaint_complete', attempt }));
       } catch (err) {
         console.error(JSON.stringify({ event: 'track_a_error', attempt, error: err instanceof Error ? err.message : String(err) }));
       }
@@ -197,11 +203,11 @@ export async function processProductImage(
 
     if (!adBuffer) continue;
 
-    // Refinement pipeline: Kontext → CodeFormer (faces, only on retry) → ESRGAN (sharpness) → post-process → label
+    // Refinement pipeline: Kontext → CodeFormer (faces, retry only) → ESRGAN → post-process → label
     // SKIP Kontext for Track A — it alters the real product cutout we carefully preserved
     console.info(JSON.stringify({ event: 'refinement_pipeline_start', attempt, skipKontext: useTrackA }));
     if (!useTrackA) {
-      adBuffer = await refineWithKontext(adBuffer, forceTrackB);
+      adBuffer = await refineWithKontext(adBuffer, isWithModel);
     }
     // CodeFormer is slow (30-90s) — only run on retry when attempt 1 had face issues
     if (forceTrackB && attempt > 1 && lastQaResult?.humanAnatomy !== 'natural') {

@@ -37,7 +37,8 @@ export type PaymentCheckJobData = z.infer<typeof PaymentCheckJobDataSchema>;
 export const SessionTimeoutJobDataSchema = z.object({
   phoneNumber: z.string().min(10),
   expectedState: z.string().min(1),
-  action: z.enum(["nudge", "expire", "advance_images"]),
+  action: z.enum(["nudge", "expire", "advance_images", "advance_photos"]),
+  expectedImageCount: z.number().int().nonnegative().optional(),
 });
 
 export type SessionTimeoutJobData = z.infer<typeof SessionTimeoutJobDataSchema>;

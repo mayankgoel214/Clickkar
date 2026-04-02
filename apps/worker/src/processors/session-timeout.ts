@@ -4,7 +4,8 @@
  * Handles:
  * - 'nudge': Gentle reminder after 10 min of inactivity
  * - 'expire': Reset session after 1 hour of inactivity
- * - 'advance_images': Auto-advance from AWAITING_IMAGES after 60s silence
+ * - 'advance_images': Legacy — auto-advance from AWAITING_IMAGES (V1)
+ * - 'advance_photos': Auto-advance from AWAITING_PHOTO after 45s silence (V2)
  */
 
 import type { Job } from 'bullmq';
@@ -70,11 +71,21 @@ export async function processSessionTimeout(job: Job): Promise<void> {
     }
 
     case 'advance_images': {
-      log('Auto-advancing from image collection to style selection');
+      // V1 legacy — no-op in V2 flow; session state will not be AWAITING_IMAGES
+      log('advance_images: legacy V1 job, skipping (state machine upgraded to V2)');
+      break;
+    }
 
-      // Check there are images to process
+    case 'advance_photos': {
+      log('Auto-advancing from AWAITING_PHOTO to order creation');
+
+      if (session.state !== 'AWAITING_PHOTO') {
+        log('Session not in AWAITING_PHOTO, skipping');
+        return;
+      }
+
       if (session.imageStorageUrls.length === 0) {
-        log('No images collected, resetting to IDLE');
+        log('No photos collected, resetting to IDLE');
         await prisma.session.update({
           where: { phoneNumber: data.phoneNumber },
           data: { state: 'IDLE', stateEnteredAt: new Date() },
@@ -82,31 +93,12 @@ export async function processSessionTimeout(job: Job): Promise<void> {
         return;
       }
 
-      // Transition to style selection
-      await prisma.session.update({
-        where: { phoneNumber: data.phoneNumber },
-        data: { state: 'AWAITING_STYLE', stateEnteredAt: new Date() },
-      });
-
-      // Send style selection prompt
-      await wa.sendList(
+      // Delegate to the session package handler
+      const { onPhotoBatchTimeout } = await import('@whatsads/session');
+      await onPhotoBatchTimeout(
         data.phoneNumber,
-        lang === 'hi' ? 'Kaunsa style chahiye?' : 'Which style would you like?',
-        lang === 'hi' ? 'Style chunein' : 'Choose style',
-        [
-          {
-            title: 'Styles',
-            rows: [
-              { id: 'style_clean_white', title: lang === 'hi' ? 'Saaf White' : 'Clean White' },
-              { id: 'style_lifestyle', title: lang === 'hi' ? 'Lifestyle' : 'Lifestyle' },
-              { id: 'style_gradient', title: lang === 'hi' ? 'Gradient' : 'Gradient' },
-              { id: 'style_festive', title: lang === 'hi' ? 'Festival' : 'Festival' },
-              { id: 'style_minimal', title: lang === 'hi' ? 'Dark Minimal' : 'Dark Minimal' },
-              { id: 'style_outdoor', title: lang === 'hi' ? 'Outdoor' : 'Outdoor' },
-              { id: 'style_studio', title: lang === 'hi' ? 'Studio' : 'Studio' },
-            ],
-          },
-        ],
+        data.expectedImageCount ?? session.imageStorageUrls.length,
+        wa,
       );
       break;
     }

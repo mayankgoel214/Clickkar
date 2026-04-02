@@ -25,10 +25,7 @@ import {
   msgGenericError,
 } from '../messages.js';
 import {
-  ButtonIds,
-  ListIds,
   FREE_REVISIONS_PER_ORDER,
-  EDIT_REVISION_PAISE,
 } from '../types.js';
 import type { MessageContext } from '../types.js';
 import { logger } from '../logger.js';
@@ -75,33 +72,30 @@ export async function handleAwaitingEdit(
     const replyId = message.buttonReplyId || message.listReplyId;
 
     switch (replyId) {
-      case ButtonIds.EDIT_BACKGROUND:
-      case ButtonIds.EDIT_STYLE:
-        // Send style list again — user picks a new style
-        // For now, use the same style list flow
+      case 'edit_background':
+      case 'edit_style':
         editStyle = 'change_background';
         break;
 
-      case ButtonIds.EDIT_LIGHTING:
+      case 'edit_lighting':
         editInstructions = 'Make it brighter with better lighting';
         break;
 
-      case ButtonIds.EDIT_CROP:
+      case 'edit_crop':
         editInstructions = 'Zoom in on the product, make it larger in frame';
         break;
 
-      case ButtonIds.EDIT_OTHER:
-        // Ask user to send text/voice
+      case 'edit_other':
+        // Ask user to send text/voice — stay in DELIVERED, next text/voice will route back here
         await wa.sendText(
           session.phoneNumber,
           lang === 'hi'
-            ? 'Batao kya chahiye — text ya voice note mein. Hindi mein bilkul chalega.'
-            : 'Tell me what you want — text or voice note. Hindi is fine.',
+            ? 'Batao kya chahiye — text ya voice note mein.'
+            : 'Send text or voice note with what you want.',
         );
-        return; // Stay in AWAITING_EDIT, wait for their instruction
+        return;
 
       default:
-        // Might be a style selection from the list
         if (replyId && replyId.startsWith('style_')) {
           editStyle = replyId.replace('style_', '');
         }
@@ -153,12 +147,23 @@ export async function handleAwaitingEdit(
       data: { revisionsUsed: { increment: 1 } },
     });
 
+    // Create ImageJob record for the edit
+    const editJobId = crypto.randomUUID();
+    await prisma.imageJob.create({
+      data: {
+        id: editJobId,
+        orderId: order.id,
+        inputImageUrl: order.cutoutUrls[0] || order.inputImageUrls[0] || '',
+        style: editStyle || order.style || 'style_clean_white',
+        status: 'queued',
+      },
+    });
+
     // Enqueue re-processing job
-    // If cutout exists, use it for faster processing (skip BG removal)
     const queue = getImageQueue();
-    await queue.add('edit-image', {
+    await queue.add('process_image', {
       orderId: order.id,
-      imageJobId: `edit-${Date.now()}`,
+      imageJobId: editJobId,
       phoneNumber: session.phoneNumber,
       inputImageUrl: order.cutoutUrls[0] || order.inputImageUrls[0] || '',
       style: editStyle || order.style || 'clean_white',

@@ -14,18 +14,14 @@ datasource db {
 
 enum SessionState {
   IDLE
-  ONBOARDING_WELCOME
-  ONBOARDING_NAME
-  ONBOARDING_CATEGORY
-  ONBOARDING_CONSENT
-  AWAITING_IMAGES
-  AWAITING_STYLE
-  AWAITING_VOICE
-  CONFIRMING
+  SETUP_LANGUAGE
+  SETUP_NAME
+  SETUP_CATEGORY
+  SETUP_STYLE
+  AWAITING_PHOTO
   AWAITING_PAYMENT
   PROCESSING
   DELIVERED
-  AWAITING_EDIT
   EDIT_PROCESSING
 }
 
@@ -79,6 +75,9 @@ model User {
   language        String    @default("hi")
   businessType    String?   @map("business_type")
   stylePreference String?   @map("style_preference")
+  lastStyleUsed   String?   @map("last_style_used")
+  styleHistory    Json?     @map("style_history")
+  orderCount      Int       @default(0) @map("order_count")
   totalImages     Int       @default(0) @map("total_images")
   firstSeenAt     DateTime  @default(now()) @map("first_seen_at")
   lastSeenAt      DateTime  @updatedAt @map("last_seen_at")
@@ -102,6 +101,7 @@ model Session {
   voiceInstructions   String?      @map("voice_instructions")
   imageMediaIds       String[]     @map("image_media_ids")
   imageStorageUrls    String[]     @map("image_storage_urls")
+  earlyPhotoMediaId   String?      @map("early_photo_media_id")
   lastUserMessageAt   DateTime?    @map("last_user_message_at")
   stateEnteredAt      DateTime?    @map("state_entered_at")
   cswExpiresAt        DateTime?    @map("csw_expires_at")

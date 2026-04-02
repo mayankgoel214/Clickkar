@@ -1,133 +1,91 @@
 /**
- * AWAITING_STYLE handler.
- * Sends the style selection list and handles the reply.
+ * SETUP_STYLE handler — V3 streamlined flow.
+ *
+ * After style pick → straight to AWAITING_PHOTO.
+ * Instructions merged into photo step (caption).
  */
 
 import type { WhatsAppClient } from '@whatsads/whatsapp';
 import type { Session, User } from '@whatsads/db';
 import { transitionTo } from '../db-helpers.js';
-import {
-  msgAskStyle,
-  msgAskVoice,
-  msgUnknownMessage,
-  styleDisplayName,
-} from '../messages.js';
-import { ButtonIds, ListIds } from '../types.js';
+import { styleDisplayName } from '../messages.js';
+import { ListIds, ButtonIds } from '../types.js';
 import type { MessageContext } from '../types.js';
+import { logger } from '../logger.js';
 
-// ---------------------------------------------------------------------------
-// Handler
-// ---------------------------------------------------------------------------
-
-export async function handleAwaitingStyle(
+export async function handleSetupStyle(
   session: Session,
   user: User,
   message: MessageContext,
-  waClient: WhatsAppClient,
+  wa: WhatsAppClient,
 ): Promise<void> {
   const lang = (user.language === 'en' ? 'en' : 'hi') as 'hi' | 'en';
   const phoneNumber = session.phoneNumber;
 
-  if (message.messageType !== 'interactive' || !message.listReplyId) {
-    // Re-send the style list
-    await waClient.sendText(phoneNumber, msgAskStyle(lang));
-    await sendStyleList(phoneNumber, lang, waClient);
+  let styleId: string | null = null;
+
+  // List reply (normal flow)
+  if (message.messageType === 'interactive' && message.listReplyId) {
+    if (VALID_STYLE_IDS.has(message.listReplyId)) {
+      styleId = message.listReplyId;
+    }
+  }
+
+  // User typed a style name
+  if (!styleId && message.messageType === 'text' && message.text) {
+    styleId = resolveStyleFromText(message.text.trim().toLowerCase());
+  }
+
+  // Returning user: same/new style buttons
+  if (!styleId && message.messageType === 'interactive' && message.buttonReplyId) {
+    if (message.buttonReplyId === ButtonIds.SAME_STYLE && user.lastStyleUsed) {
+      styleId = user.lastStyleUsed;
+    }
+    if (message.buttonReplyId === ButtonIds.NEW_STYLE) {
+      const { sendStyleList } = await import('./onboarding.js');
+      await sendStyleList(phoneNumber, lang, wa, user.businessType ?? undefined);
+      return;
+    }
+  }
+
+  if (!styleId) {
+    const { sendStyleList } = await import('./onboarding.js');
+    await sendStyleList(phoneNumber, lang, wa, user.businessType ?? undefined);
     return;
   }
 
-  const styleId = message.listReplyId;
-  if (!isValidStyleId(styleId)) {
-    await waClient.sendText(phoneNumber, msgUnknownMessage(lang));
-    await sendStyleList(phoneNumber, lang, waClient);
-    return;
-  }
+  const styleName = styleDisplayName(styleId, lang);
 
-  // Store style and advance to AWAITING_VOICE
-  await transitionTo(phoneNumber, 'AWAITING_VOICE', {
+  await transitionTo(phoneNumber, 'AWAITING_PHOTO', {
     styleSelection: styleId,
+    imageMediaIds: [],
+    imageStorageUrls: [],
+    voiceInstructions: null,
+    currentOrderId: null,
   });
 
-  // Confirm style selection
-  const styleName = styleDisplayName(styleId, lang);
-  await waClient.sendText(
+  await wa.sendText(
     phoneNumber,
     lang === 'hi'
-      ? `Style choose ho gaya: *${styleName}* ✅`
-      : `Style selected: *${styleName}* ✅`,
+      ? `*${styleName}* style set!\nAb product ki photo bhejiye.`
+      : `*${styleName}* style set!\nNow send your product photo.`,
   );
 
-  // Ask for voice instructions with a skip button
-  await waClient.sendButtons(
-    phoneNumber,
-    msgAskVoice(lang),
-    [{ id: ButtonIds.SKIP_VOICE, title: lang === 'hi' ? 'Skip karein' : 'Skip' }],
-  );
+  logger.info('Style selected, awaiting photo', { phoneNumber, styleId });
 }
 
-// ---------------------------------------------------------------------------
-// Exported helper used by images.ts and confirmation.ts
-// ---------------------------------------------------------------------------
-
-export async function sendStyleList(
-  phoneNumber: string,
-  lang: 'hi' | 'en',
-  waClient: WhatsAppClient,
-): Promise<void> {
-  await waClient.sendList(
-    phoneNumber,
-    lang === 'hi' ? 'Kaunsa style chahiye?' : 'Which style would you like?',
-    lang === 'hi' ? 'Style chuniye' : 'Choose Style',
-    [
-      {
-        title: lang === 'hi' ? 'Background style' : 'Background Style',
-        rows: [
-          {
-            id: ListIds.STYLE_CLEAN_WHITE,
-            title: styleDisplayName(ListIds.STYLE_CLEAN_WHITE, lang),
-            description: lang === 'hi' ? 'Saaf safed — har product pe accha lagta hai' : 'Pure white — works for any product',
-          },
-          {
-            id: ListIds.STYLE_LIFESTYLE,
-            title: styleDisplayName(ListIds.STYLE_LIFESTYLE, lang),
-            description: lang === 'hi' ? 'Real-life setting mein dikhaye' : 'Show in a real-life setting',
-          },
-          {
-            id: ListIds.STYLE_GRADIENT,
-            title: styleDisplayName(ListIds.STYLE_GRADIENT, lang),
-            description: lang === 'hi' ? 'Smooth color gradient background' : 'Smooth colour gradient background',
-          },
-          {
-            id: ListIds.STYLE_OUTDOOR,
-            title: styleDisplayName(ListIds.STYLE_OUTDOOR, lang),
-            description: lang === 'hi' ? 'Bahar ka natural setting' : 'Natural outdoor setting',
-          },
-          {
-            id: ListIds.STYLE_STUDIO,
-            title: styleDisplayName(ListIds.STYLE_STUDIO, lang),
-            description: lang === 'hi' ? 'Professional studio look' : 'Professional studio look',
-          },
-          {
-            id: ListIds.STYLE_FESTIVE,
-            title: styleDisplayName(ListIds.STYLE_FESTIVE, lang),
-            description: lang === 'hi' ? 'Tyohar ke liye special' : 'Special festive background',
-          },
-          {
-            id: ListIds.STYLE_MINIMAL,
-            title: styleDisplayName(ListIds.STYLE_MINIMAL, lang),
-            description: lang === 'hi' ? 'Simple aur clean design' : 'Simple and clean design',
-          },
-        ],
-      },
-    ],
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
 // ---------------------------------------------------------------------------
 
 const VALID_STYLE_IDS = new Set<string>(Object.values(ListIds).filter(id => id.startsWith('style_')));
 
-function isValidStyleId(id: string): boolean {
-  return VALID_STYLE_IDS.has(id);
+function resolveStyleFromText(text: string): string | null {
+  if (text.includes('white') || text.includes('safed') || text.includes('clean')) return ListIds.STYLE_CLEAN_WHITE;
+  if (text.includes('lifestyle') || text.includes('life')) return ListIds.STYLE_LIFESTYLE;
+  if (text.includes('gradient') || text.includes('color') || text.includes('colour')) return ListIds.STYLE_GRADIENT;
+  if (text.includes('outdoor') || text.includes('bahar') || text.includes('nature')) return ListIds.STYLE_OUTDOOR;
+  if (text.includes('studio') || text.includes('professional')) return ListIds.STYLE_STUDIO;
+  if (text.includes('festive') || text.includes('tyohar') || text.includes('festival')) return ListIds.STYLE_FESTIVE;
+  if (text.includes('minimal') || text.includes('simple')) return ListIds.STYLE_MINIMAL;
+  if (text.includes('model') || text.includes('person') || text.includes('human')) return ListIds.STYLE_WITH_MODEL;
+  return null;
 }

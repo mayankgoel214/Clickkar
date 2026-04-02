@@ -126,6 +126,9 @@ export async function updateUser(
     language: string;
     businessType: string;
     stylePreference: string;
+    lastStyleUsed: string;
+    styleHistory: Record<string, number>;
+    orderCount: number;
   }>,
 ): Promise<User> {
   return prisma.user.update({ where: { phoneNumber }, data });

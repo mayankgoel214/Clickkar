@@ -1,140 +1,226 @@
 /**
- * AWAITING_IMAGES handler.
+ * AWAITING_PHOTO handler — V2 streamlined flow.
  *
- * - Receives images → download from WhatsApp (5-min expiry window!), upload to Storage.
- * - Accumulates image URLs on the session.
- * - Sets/resets a 60-second BullMQ delayed job to auto-advance to AWAITING_STYLE.
- * - Enforces MAX_IMAGES_PER_ORDER limit.
- * - If the user sends text/button while awaiting images, interprets "done" intent
- *   and advances immediately.
+ * Photos arrive AFTER setup is complete (style + optional instructions already stored).
+ *
+ * - Download image from WhatsApp media API immediately (5-min expiry).
+ * - Upload to Supabase Storage, accumulate URLs on session.
+ * - If caption present, store as voiceInstructions.
+ * - First photo: acknowledge, start 45s BullMQ auto-advance timer.
+ * - At MAX_IMAGES_PER_ORDER (5): immediately create order + payment.
+ * - Text "done"/"bas" or timer expiry: create order + payment.
+ * - Free trial if user.orderCount === 0.
  */
 
 import type { WhatsAppClient } from '@whatsads/whatsapp';
 import { prisma } from '@whatsads/db';
 import type { Session, User } from '@whatsads/db';
-import { uploadFile } from '@whatsads/storage';
-import { Buckets } from '@whatsads/storage';
+import { uploadFile, Buckets } from '@whatsads/storage';
 import { getSessionTimeoutQueue } from '@whatsads/queue';
-import {
-  msgImageReceived,
-  msgMultiImageReceived,
-  msgAskStyle,
-  msgGenericError,
-  msgUnknownMessage,
-} from '../messages.js';
-import {
-  IMAGE_BATCH_TIMEOUT_SECONDS,
-  MAX_IMAGES_PER_ORDER,
-} from '../types.js';
+import { msgPhotoReceived, msgGenericError, msgUnknownMessage } from '../messages.js';
+import { MAX_IMAGES_PER_ORDER, PHOTO_BATCH_TIMEOUT_SECONDS } from '../types.js';
 import { transitionTo } from '../db-helpers.js';
 import { logger } from '../logger.js';
 import type { MessageContext } from '../types.js';
-import { sendStyleList } from './style.js';
+import {
+  createOrderAndSendPayment,
+  downloadWhatsAppMedia,
+  mimeToExt,
+} from './instructions.js';
 
 // ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
 
-export async function handleAwaitingImages(
+export async function handleAwaitingPhoto(
   session: Session,
   user: User,
   message: MessageContext,
-  waClient: WhatsAppClient,
+  wa: WhatsAppClient,
 ): Promise<void> {
   const lang = (user.language === 'en' ? 'en' : 'hi') as 'hi' | 'en';
   const phoneNumber = session.phoneNumber;
+
+  // ---- BUTTON REPLIES (same/new style from returning user with early photo) ----
+  if (message.messageType === 'interactive' && message.buttonReplyId) {
+    const { ButtonIds } = await import('../types.js');
+    if (message.buttonReplyId === ButtonIds.SAME_STYLE && user.lastStyleUsed) {
+      await prisma.session.update({
+        where: { phoneNumber },
+        data: { styleSelection: user.lastStyleUsed },
+      });
+      // If we have an early photo, advance to payment
+      if (session.earlyPhotoMediaId || session.imageStorageUrls.length > 0) {
+        const freshSession = await prisma.session.findUnique({ where: { phoneNumber } });
+        if (freshSession) {
+          await advanceToPayment(freshSession, user, wa, lang);
+        }
+        return;
+      }
+      await wa.sendText(phoneNumber, lang === 'hi' ? 'Photo bhejiye!' : 'Send your photo!');
+      return;
+    }
+    if (message.buttonReplyId === ButtonIds.NEW_STYLE) {
+      await transitionTo(phoneNumber, 'SETUP_STYLE');
+      const { sendStyleList } = await import('./onboarding.js');
+      await sendStyleList(phoneNumber, lang, wa, user.businessType ?? undefined);
+      return;
+    }
+  }
 
   // ---- IMAGE MESSAGE ----
   if (message.messageType === 'image' && message.mediaId) {
     const currentCount = session.imageStorageUrls.length;
 
     if (currentCount >= MAX_IMAGES_PER_ORDER) {
-      await waClient.sendText(
+      // Already at max — ignore additional photos
+      await wa.sendText(
         phoneNumber,
         lang === 'hi'
-          ? `Maximum ${MAX_IMAGES_PER_ORDER} photos liya ja sakta hai. Style chuniye!`
-          : `Maximum ${MAX_IMAGES_PER_ORDER} photos reached. Let's choose your style!`,
+          ? `Maximum ${MAX_IMAGES_PER_ORDER} photos ho gayi. Processing shuru kar raha hun!`
+          : `Maximum ${MAX_IMAGES_PER_ORDER} photos reached. Starting processing!`,
       );
-      await advanceToStyle(session, user, waClient);
       return;
     }
 
-    // Download from WhatsApp and immediately upload to Storage
+    // Download + upload immediately
     let storageUrl: string;
     try {
-      storageUrl = await downloadAndStore(message.mediaId, phoneNumber, currentCount, waClient);
+      const { buffer, mimeType } = await downloadWhatsAppMedia(message.mediaId);
+      const ext = mimeToExt(mimeType);
+      const path = `${phoneNumber}/${Date.now()}_${currentCount}${ext}`;
+      storageUrl = await uploadFile(Buckets.RAW_IMAGES, path, buffer, mimeType);
     } catch (err) {
-      logger.error('Image download/upload failed', {
+      logger.error('Photo download/upload failed', {
         phoneNumber,
         mediaId: message.mediaId,
         error: err instanceof Error ? err.message : String(err),
       });
-      await waClient.sendText(phoneNumber, msgGenericError(lang));
+      await wa.sendText(phoneNumber, msgGenericError(lang));
       return;
     }
 
     // Append to session
     const newUrls = [...session.imageStorageUrls, storageUrl];
     const newMediaIds = [...session.imageMediaIds, message.mediaId];
+
+    // If image has a caption, use it as instructions (overrides any prior instructions)
+    const instructions = message.caption?.trim() || session.voiceInstructions || null;
+
     await prisma.session.update({
       where: { phoneNumber },
       data: {
         imageStorageUrls: newUrls,
         imageMediaIds: newMediaIds,
+        ...(message.caption?.trim() ? { voiceInstructions: message.caption.trim() } : {}),
       },
     });
 
     const newCount = newUrls.length;
 
     // Acknowledge
-    if (newCount === 1) {
-      await waClient.sendText(phoneNumber, msgImageReceived(lang));
-    } else {
-      await waClient.sendText(phoneNumber, msgMultiImageReceived(lang, newCount));
-    }
+    await wa.sendText(phoneNumber, msgPhotoReceived(lang, newCount));
 
-    // Schedule auto-advance (or reschedule if one is already pending)
-    await scheduleImageTimeout(phoneNumber, newCount);
-
-    // Auto-advance if at max capacity
+    // At max: advance immediately
     if (newCount >= MAX_IMAGES_PER_ORDER) {
-      await advanceToStyle(session, user, waClient);
+      const freshSession = await prisma.session.findUnique({ where: { phoneNumber } });
+      if (freshSession) {
+        await advanceToPayment(freshSession, user, wa, lang);
+      }
+      return;
     }
+
+    // Start/reset the 45-second auto-advance timer
+    await schedulePhotoTimeout(phoneNumber, newCount);
     return;
   }
 
-  // ---- TEXT / BUTTON — interpret as "done sending images" if we have at least one ----
-  if (session.imageStorageUrls.length > 0) {
-    const isDoneIntent =
-      message.messageType === 'text' ||
-      (message.messageType === 'interactive' && message.buttonReplyId);
-
-    if (isDoneIntent) {
-      await advanceToStyle(session, user, waClient);
-      return;
+  // ---- VOICE NOTE: could be instructions if we have photos and already asked ----
+  if (message.messageType === 'audio' && message.mediaId && session.imageStorageUrls.length > 0) {
+    // Check if we're in instructions phase (earlyPhotoMediaId used as flag: 'awaiting_instructions')
+    if (session.earlyPhotoMediaId === 'awaiting_instructions') {
+      try {
+        const accessToken = process.env.WHATSAPP_ACCESS_TOKEN!;
+        const { downloadMedia } = await import('@whatsads/whatsapp');
+        const { buffer, mimeType } = await downloadMedia(message.mediaId, accessToken);
+        const { uploadFile: upload, Buckets: B } = await import('@whatsads/storage');
+        await upload(B.VOICE_NOTES, `${phoneNumber}/${Date.now()}.ogg`, buffer, mimeType);
+        const { transcribeVoiceNote } = await import('@whatsads/ai');
+        const transcript = await transcribeVoiceNote(buffer, mimeType);
+        if (transcript.text) {
+          await prisma.session.update({ where: { phoneNumber }, data: { voiceInstructions: transcript.text, earlyPhotoMediaId: null } });
+          await wa.sendText(phoneNumber, lang === 'hi' ? `Samajh gaya: "${transcript.text}"\nShuru karte hain!` : `Got it: "${transcript.text}"\nLet's go!`);
+        } else {
+          await prisma.session.update({ where: { phoneNumber }, data: { earlyPhotoMediaId: null } });
+        }
+        const freshSession = await prisma.session.findUnique({ where: { phoneNumber } });
+        if (freshSession) await advanceToPayment(freshSession, user, wa, lang);
+        return;
+      } catch (err) {
+        logger.error('Voice transcription failed', { error: String(err) });
+        await prisma.session.update({ where: { phoneNumber }, data: { earlyPhotoMediaId: null } });
+        const freshSession = await prisma.session.findUnique({ where: { phoneNumber } });
+        if (freshSession) await advanceToPayment(freshSession, user, wa, lang);
+        return;
+      }
     }
   }
 
-  // ---- No images yet and non-image message ----
-  await waClient.sendText(phoneNumber, msgUnknownMessage(lang));
+  // ---- TEXT while we have photos ----
+  if (message.messageType === 'text' && message.text && session.imageStorageUrls.length > 0) {
+    const text = message.text.trim().toLowerCase();
+    const isDoneIntent = text === 'done' || text === 'bas' || text === 'ok' || text === 'okay' || text === 'haan' || text === 'skip';
+
+    // If we're in instructions phase, text = instructions (unless it's "done"/"skip")
+    if (session.earlyPhotoMediaId === 'awaiting_instructions') {
+      if (isDoneIntent) {
+        // Skip instructions
+        await prisma.session.update({ where: { phoneNumber }, data: { earlyPhotoMediaId: null } });
+        const freshSession = await prisma.session.findUnique({ where: { phoneNumber } });
+        if (freshSession) await advanceToPayment(freshSession, user, wa, lang);
+        return;
+      }
+      // Store as instructions and advance
+      await prisma.session.update({ where: { phoneNumber }, data: { voiceInstructions: message.text.trim(), earlyPhotoMediaId: null } });
+      await wa.sendText(phoneNumber, lang === 'hi' ? 'Samajh gaya! Shuru karte hain.' : 'Got it! Starting now.');
+      const freshSession = await prisma.session.findUnique({ where: { phoneNumber } });
+      if (freshSession) await advanceToPayment(freshSession, user, wa, lang);
+      return;
+    }
+
+    // Still in photo collection phase — "done" moves to instructions prompt
+    if (isDoneIntent) {
+      await askForInstructions(session, wa, lang);
+      return;
+    }
+
+    // Any other text while collecting photos — might be instructions sent early
+    await wa.sendText(
+      phoneNumber,
+      lang === 'hi' ? 'Pehle photo bhejiye, phir instructions dena.' : 'Send your photo first, then instructions.',
+    );
+    return;
+  }
+
+  // ---- No photos yet and non-image message ----
+  await wa.sendText(phoneNumber, msgUnknownMessage(lang));
 }
 
 // ---------------------------------------------------------------------------
-// Called by the SessionTimeout worker when advance_images fires
+// Called by the SessionTimeout worker when photo_timeout fires
 // ---------------------------------------------------------------------------
 
-export async function onImageBatchTimeout(
+export async function onPhotoBatchTimeout(
   phoneNumber: string,
   expectedImageCount: number,
-  waClient: WhatsAppClient,
+  wa: WhatsAppClient,
 ): Promise<void> {
   const session = await prisma.session.findUnique({ where: { phoneNumber } });
   if (!session) return;
 
-  // Guard: only advance if still in AWAITING_IMAGES and count hasn't grown
-  // (another job may have rescheduled and this is a stale fire)
+  // Guard: only advance if still in AWAITING_PHOTO and count hasn't grown
   if (
-    session.state !== 'AWAITING_IMAGES' ||
+    session.state !== 'AWAITING_PHOTO' ||
     session.imageStorageUrls.length < expectedImageCount
   ) {
     return;
@@ -143,141 +229,95 @@ export async function onImageBatchTimeout(
   const user = await prisma.user.findUnique({ where: { phoneNumber } });
   if (!user) return;
 
-  await advanceToStyle(session, user, waClient);
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-async function advanceToStyle(
-  session: Session,
-  user: User,
-  waClient: WhatsAppClient,
-): Promise<void> {
-  if (session.imageStorageUrls.length === 0) {
-    // Nothing to do
-    return;
-  }
-
-  await transitionTo(session.phoneNumber, 'AWAITING_STYLE');
   const lang = (user.language === 'en' ? 'en' : 'hi') as 'hi' | 'en';
-  await waClient.sendText(session.phoneNumber, msgAskStyle(lang));
-  await sendStyleList(session.phoneNumber, lang, waClient);
+  await askForInstructions(session, wa, lang);
 }
 
-/**
- * Download WhatsApp media and upload to Supabase Storage.
- * Returns the public storage URL.
- *
- * WhatsApp media URLs expire in ~5 minutes — this must be called immediately
- * after the webhook is received.
- */
-async function downloadAndStore(
-  mediaId: string,
-  phoneNumber: string,
-  index: number,
-  waClient: WhatsAppClient,
-): Promise<string> {
-  // Step 1: Retrieve the download URL from the Graph API
-  // Read token fresh from .env to avoid stale tokens after rotation
-  const accessToken = (() => {
-    try {
-      const { readFileSync } = require('fs');
-      const { resolve } = require('path');
-      const envPath = resolve(process.cwd(), '.env');
-      const content = readFileSync(envPath, 'utf-8');
-      const match = content.match(/^WHATSAPP_ACCESS_TOKEN=(.+)$/m);
-      if (match?.[1]) return match[1].trim();
-    } catch {}
-    return process.env['WHATSAPP_ACCESS_TOKEN'];
-  })();
-  const apiVersion = process.env['WHATSAPP_API_VERSION'] ?? 'v21.0';
+// ---------------------------------------------------------------------------
+// Ask for instructions after photos are collected
+// ---------------------------------------------------------------------------
 
-  if (!accessToken) {
-    throw new Error('WHATSAPP_ACCESS_TOKEN env var not set');
-  }
-
-  const mediaInfoRes = await fetch(
-    `https://graph.facebook.com/${apiVersion}/${mediaId}`,
-    { headers: { Authorization: `Bearer ${accessToken}` } },
-  );
-
-  if (!mediaInfoRes.ok) {
-    throw new Error(
-      `Failed to fetch media info for ${mediaId}: ${mediaInfoRes.status}`,
-    );
-  }
-
-  const mediaInfo = (await mediaInfoRes.json()) as {
-    url: string;
-    mime_type: string;
-  };
-
-  // Step 2: Download the binary
-  const downloadRes = await fetch(mediaInfo.url, {
-    headers: { Authorization: `Bearer ${accessToken}` },
+async function askForInstructions(
+  session: Session,
+  wa: WhatsAppClient,
+  lang: 'hi' | 'en',
+): Promise<void> {
+  // Set flag so next message is treated as instructions
+  await prisma.session.update({
+    where: { phoneNumber: session.phoneNumber },
+    data: { earlyPhotoMediaId: 'awaiting_instructions' },
   });
 
-  if (!downloadRes.ok) {
-    throw new Error(`Failed to download media ${mediaId}: ${downloadRes.status}`);
-  }
-
-  const arrayBuffer = await downloadRes.arrayBuffer();
-  const buffer = Buffer.from(arrayBuffer);
-
-  // Derive extension from mime type
-  const ext = mimeToExt(mediaInfo.mime_type);
-  const path = `${phoneNumber}/${Date.now()}_${index}${ext}`;
-
-  return uploadFile(Buckets.RAW_IMAGES, path, buffer, mediaInfo.mime_type);
+  await wa.sendText(
+    session.phoneNumber,
+    lang === 'hi'
+      ? 'Kuch special instructions? Text ya voice note bhejein.\nYa "done" likhein skip karne ke liye.'
+      : 'Any special instructions? Send text or voice note.\nOr type "done" to skip.',
+  );
 }
 
-/**
- * Enqueue a delayed BullMQ job to auto-advance to style selection.
- * Uses a deterministic job ID so scheduling again replaces the existing job.
- */
-async function scheduleImageTimeout(
+// ---------------------------------------------------------------------------
+// Internal: advance to order creation + payment
+// ---------------------------------------------------------------------------
+
+async function advanceToPayment(
+  session: Session,
+  user: User,
+  wa: WhatsAppClient,
+  lang: 'hi' | 'en',
+): Promise<void> {
+  if (session.imageStorageUrls.length === 0) return;
+
+  const styleId = session.styleSelection ?? 'style_clean_white';
+
+  await createOrderAndSendPayment({
+    session,
+    user,
+    lang,
+    wa,
+    imageStorageUrls: session.imageStorageUrls,
+    imageMediaIds: session.imageMediaIds,
+    imageCount: session.imageStorageUrls.length,
+    styleId,
+    voiceInstructions: session.voiceInstructions,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// BullMQ: schedule auto-advance after PHOTO_BATCH_TIMEOUT_SECONDS
+// ---------------------------------------------------------------------------
+
+async function schedulePhotoTimeout(
   phoneNumber: string,
   imageCount: number,
 ): Promise<void> {
   const queue = getSessionTimeoutQueue();
-  const jobId = `img_timeout_${phoneNumber}`;
+  const jobId = `photo_timeout_${phoneNumber}`;
 
   try {
-    // Remove any existing timeout job (reset the timer)
     const existing = await queue.getJob(jobId);
-    if (existing) {
-      await existing.remove();
-    }
+    if (existing) await existing.remove();
 
     await queue.add(
-      'advance_images',
+      'advance_photos',
       {
         phoneNumber,
-        expectedState: 'AWAITING_IMAGES',
-        action: 'advance_images',
+        expectedState: 'AWAITING_PHOTO',
+        expectedImageCount: imageCount,
+        action: 'advance_photos',
       },
       {
         jobId,
-        delay: IMAGE_BATCH_TIMEOUT_SECONDS * 1000,
-        // Single attempt — worker checks state before acting
+        delay: PHOTO_BATCH_TIMEOUT_SECONDS * 1000,
         attempts: 1,
       },
     );
   } catch (err) {
-    // Non-fatal — worst case the user has to send a text to advance
-    logger.warn('Failed to schedule image batch timeout', {
+    // Non-fatal
+    logger.warn('Failed to schedule photo batch timeout', {
       phoneNumber,
       imageCount,
       error: err instanceof Error ? err.message : String(err),
     });
   }
-}
-
-function mimeToExt(mimeType: string): string {
-  if (mimeType.includes('jpeg') || mimeType.includes('jpg')) return '.jpg';
-  if (mimeType.includes('png')) return '.png';
-  if (mimeType.includes('webp')) return '.webp';
-  return '.jpg';
 }
