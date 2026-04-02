@@ -1,6 +1,7 @@
 import { preprocessImage } from './preprocess.js';
 import { analyzeAndPlan, type AnalyzeAndPlanResult } from './product-analyzer.js';
-import { createStudioShot, inpaintStudioBackground, generateReferenceScene, postProcessFinal, addAILabel, refineWithKontext, restoreFaces, upscaleDownscale, uploadToStorage, downloadBuffer } from './fallback.js';
+import { createStudioShot, inpaintStudioBackground, generateReferenceScene, postProcessFinal, addAILabel, refineWithKontext, restoreFaces, upscaleDownscale, uploadToStorage, downloadBuffer, recompositeProduct, harmonizeLighting } from './fallback.js';
+import { runBriaProductShot } from './product-shot.js';
 import { combinedQualityCheck } from '../qa/combined-qa.js';
 import type { ProductAnalysis } from './product-analyzer.js';
 
@@ -181,12 +182,28 @@ export async function processProductImage(
       console.info(JSON.stringify({ event: 'studio_direct', attempt }));
       adBuffer = studioBuffer;
     } else if (useTrackA) {
-      // ===== TRACK A: Inpaint studio shot background =====
-      // Product stays on canvas, Flux replaces ONLY the white background with the scene.
+      // ===== TRACK A: Bria Product Shot + recomposite =====
+      // Bria is purpose-built for product photography. We feed it the studio shot
+      // (clean product on white), let it generate the scene, then paste the REAL
+      // product cutout back on top — guaranteeing pixel-perfect preservation.
       try {
-        console.info(JSON.stringify({ event: 'track_a_inpaint_start', attempt }));
-        adBuffer = await inpaintStudioBackground(studioBuffer, cutoutBuffer, currentScenePrompt);
-        console.info(JSON.stringify({ event: 'track_a_inpaint_complete', attempt }));
+        console.info(JSON.stringify({ event: 'track_a_bria_start', attempt }));
+
+        // Use studio shot URL as input to Bria (clean product on white)
+        const briaResult = await runBriaProductShot({
+          imageUrl: studioShotUrl,
+          sceneDescription: currentScenePrompt,
+          placement: 'bottom_center',
+        });
+
+        // Download Bria's output
+        const briaBuffer = await downloadBuffer(briaResult.outputUrl);
+
+        // RE-COMPOSITE: paste real product cutout back on top
+        // This guarantees pixel-perfect product preservation
+        adBuffer = await recompositeProduct(briaBuffer, cutoutBuffer);
+
+        console.info(JSON.stringify({ event: 'track_a_complete', attempt }));
       } catch (err) {
         console.error(JSON.stringify({ event: 'track_a_error', attempt, error: err instanceof Error ? err.message : String(err) }));
       }
@@ -203,7 +220,7 @@ export async function processProductImage(
 
     if (!adBuffer) continue;
 
-    // Refinement pipeline: Kontext → CodeFormer (faces, retry only) → ESRGAN → post-process → label
+    // Refinement pipeline: Kontext → CodeFormer (faces, retry only) → IC-Light → ESRGAN → post-process → label
     // SKIP Kontext for Track A — it alters the real product cutout we carefully preserved
     console.info(JSON.stringify({ event: 'refinement_pipeline_start', attempt, skipKontext: useTrackA }));
     if (!useTrackA) {
@@ -213,6 +230,21 @@ export async function processProductImage(
     if (forceTrackB && attempt > 1 && lastQaResult?.humanAnatomy !== 'natural') {
       adBuffer = await restoreFaces(adBuffer);
     }
+
+    // IC-Light V2 harmonization: unify lighting across the entire composited image.
+    // Only for creative styles — clean white and studio look better without it.
+    // Re-composite after IC-Light because it may subtly shift the product pixels.
+    if (params.style !== 'style_clean_white' && params.style !== 'style_studio') {
+      try {
+        const lightPrompt = plan.analysis?.recommendedScene?.lighting ?? 'soft professional studio lighting';
+        adBuffer = await harmonizeLighting(adBuffer, lightPrompt);
+        // RE-COMPOSITE again after IC-Light to restore exact product pixels
+        adBuffer = await recompositeProduct(adBuffer, cutoutBuffer);
+      } catch (err) {
+        console.warn(JSON.stringify({ event: 'iclight_failed_continuing', error: err instanceof Error ? err.message : String(err) }));
+      }
+    }
+
     adBuffer = await upscaleDownscale(adBuffer);
     adBuffer = await postProcessFinal(adBuffer, params.style);
     adBuffer = await addAILabel(adBuffer);
