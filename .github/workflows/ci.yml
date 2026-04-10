@@ -36,6 +36,7 @@ jobs:
         run: pnpm db:generate
         env:
           DATABASE_URL: postgresql://placeholder:placeholder@localhost:5432/placeholder
+          DIRECT_URL: postgresql://placeholder:placeholder@localhost:5432/placeholder
 
       - name: Typecheck all packages
         run: pnpm typecheck
@@ -44,6 +45,7 @@ jobs:
         run: pnpm build
         env:
           DATABASE_URL: postgresql://placeholder:placeholder@localhost:5432/placeholder
+          DIRECT_URL: postgresql://placeholder:placeholder@localhost:5432/placeholder
 
   deploy-staging:
     name: Deploy to Staging
