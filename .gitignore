@@ -19,3 +19,6 @@ scripts/results/
 
 # TypeScript build info
 *.tsbuildinfo
+
+# Prisma generated client (regenerated at build time)
+packages/db/src/generated/

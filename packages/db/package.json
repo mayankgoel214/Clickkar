@@ -6,7 +6,7 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "build": "prisma generate && tsc",
+    "build": "prisma generate && tsc && node -e \"const{cpSync}=require('fs');cpSync('src/generated/client','dist/generated/client',{recursive:true,filter:src=>!src.endsWith('.ts')||src.endsWith('.d.ts')})\"",
     "dev": "tsc --watch",
     "typecheck": "tsc --noEmit",
     "generate": "prisma generate",
