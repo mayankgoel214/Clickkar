@@ -38,14 +38,14 @@ jobs:
           DATABASE_URL: postgresql://placeholder:placeholder@localhost:5432/placeholder
           DIRECT_URL: postgresql://placeholder:placeholder@localhost:5432/placeholder
 
-      - name: Typecheck all packages
-        run: pnpm typecheck
-
       - name: Build all packages
         run: pnpm build
         env:
           DATABASE_URL: postgresql://placeholder:placeholder@localhost:5432/placeholder
           DIRECT_URL: postgresql://placeholder:placeholder@localhost:5432/placeholder
+
+      - name: Typecheck all packages
+        run: pnpm typecheck
 
   deploy-staging:
     name: Deploy to Staging
