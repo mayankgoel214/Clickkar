@@ -33,31 +33,31 @@ interface StylePostConfig {
 // Grain values are kept low to avoid damaging product colors.
 const STYLE_POST_CONFIG: Record<string, StylePostConfig> = {
   // Clean white: ultra-clean, zero warmth, no character — pure clinical
-  style_clean_white: { grain: 0, vignette: 0.02, warmthShift: 0, satBoost: 1.0, contrast: 1.0, blackLift: 0 },
+  style_clean_white: { grain: 0, vignette: 0.01, warmthShift: 0, satBoost: 1.0, contrast: 1.0, blackLift: 0 },
 
   // Colored studio: slight punch, warm-neutral, subtle character
-  style_studio:      { grain: 1.6, vignette: 0.06, warmthShift: 1, satBoost: 1.03, contrast: 1.01, blackLift: 2 },
+  style_studio:      { grain: 0, vignette: 0.03, warmthShift: 1, satBoost: 1.03, contrast: 1.01, blackLift: 2 },
 
   // Dark luxury: cinematic — strong vignette, neutral-warm tones, punchy contrast, deeper blacks
-  style_gradient:    { grain: 4, vignette: 0.18, warmthShift: 1, satBoost: 1.05, contrast: 1.04, blackLift: 0 },
+  style_gradient:    { grain: 0, vignette: 0.09, warmthShift: 1, satBoost: 1.05, contrast: 1.04, blackLift: 0 },
 
-  // Lifestyle: warm film look — visible grain, warm tones, lifted shadows
-  style_lifestyle:   { grain: 3.2, vignette: 0.12, warmthShift: 3, satBoost: 1.03, contrast: 0.97, blackLift: 5 },
+  // Lifestyle: warm film look — warm tones, lifted shadows
+  style_lifestyle:   { grain: 0, vignette: 0.06, warmthShift: 3, satBoost: 1.03, contrast: 0.97, blackLift: 5 },
 
   // Festive: warm golden glow — heaviest warmth, rich saturation, golden cast
-  style_festive:     { grain: 2.4, vignette: 0.14, warmthShift: 5, satBoost: 1.06, contrast: 0.96, blackLift: 4 },
+  style_festive:     { grain: 0, vignette: 0.07, warmthShift: 5, satBoost: 1.06, contrast: 0.96, blackLift: 4 },
 
-  // Outdoor: nature film — grain for organic feel, warm but natural, lifted shadows
-  style_outdoor:     { grain: 4, vignette: 0.14, warmthShift: 2, satBoost: 1.04, contrast: 0.96, blackLift: 4 },
+  // Outdoor: nature film — warm but natural, lifted shadows
+  style_outdoor:     { grain: 0, vignette: 0.07, warmthShift: 2, satBoost: 1.04, contrast: 0.96, blackLift: 4 },
 
   // Minimal: cool, clinical, architectural — zero warmth, precise contrast, no grain
-  style_minimal:     { grain: 0, vignette: 0.03, warmthShift: -1, satBoost: 0.98, contrast: 1.02, blackLift: 1 },
+  style_minimal:     { grain: 0, vignette: 0.015, warmthShift: -1, satBoost: 0.98, contrast: 1.02, blackLift: 1 },
 
-  // With model: warm portrait look — flattering warmth, soft contrast, gentle grain
-  style_with_model:  { grain: 2.4, vignette: 0.10, warmthShift: 2, satBoost: 1.02, contrast: 0.98, blackLift: 3 },
+  // With model: warm portrait look — flattering warmth, soft contrast
+  style_with_model:  { grain: 0, vignette: 0.05, warmthShift: 2, satBoost: 1.02, contrast: 0.98, blackLift: 3 },
 };
 
-const DEFAULT_POST_CONFIG: StylePostConfig = { grain: 1, vignette: 0.08, warmthShift: 1, satBoost: 1.02, contrast: 0.98, blackLift: 3 };
+const DEFAULT_POST_CONFIG: StylePostConfig = { grain: 0, vignette: 0.04, warmthShift: 1, satBoost: 1.02, contrast: 0.98, blackLift: 3 };
 
 /**
  * Full post-processing pipeline that transforms AI output into
@@ -241,7 +241,7 @@ export async function addAdOverlay(
         <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stop-color="black" stop-opacity="0"/>
           <stop offset="70%" stop-color="black" stop-opacity="0"/>
-          <stop offset="100%" stop-color="black" stop-opacity="0.45"/>
+          <stop offset="100%" stop-color="black" stop-opacity="0.25"/>
         </linearGradient>
       </defs>
       <rect width="${w}" height="${h}" fill="url(#g)"/>

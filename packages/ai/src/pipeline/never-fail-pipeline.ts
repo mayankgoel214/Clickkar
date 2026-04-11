@@ -9,7 +9,7 @@
 
 import { processProductImageV3 } from './gemini-pipeline-v3.js';
 import type { ProcessImageParams, ProcessImageResult } from './orchestrator.js';
-import { downloadBuffer, uploadToStorage, createBriaFallbackShot, postProcessFinal, addAILabel, addAdOverlay, generateStoryFormat } from './fallback.js';
+import { downloadBuffer, uploadToStorage, createBriaFallbackShot, postProcessFinal, addAILabel, generateStoryFormat } from './fallback.js';
 import { runDeterministicChecks } from '../qa/deterministic-checks.js';
 import { createStyledStudioShot, createCleanStudioShot, createEnhancedOriginal } from './styled-studio.js';
 
@@ -111,7 +111,6 @@ export async function processImageNeverFail(
       const briaCheck = await runDeterministicChecks(rawBuffer, briaBuffer);
       if (briaCheck.pass || briaCheck.estimatedFillPct > 15) {
         let output = await postProcessFinal(briaBuffer, style);
-        output = await addAdOverlay(output, { style });
         output = await addAILabel(output);
 
         const outputUrl = await uploadToStorage(output, `output_tier2a_${Date.now()}.jpg`);
@@ -154,8 +153,7 @@ export async function processImageNeverFail(
       ]);
       clearTimeout(tier2bTimer!);
 
-      let output = styledBuffer;
-      output = await addAdOverlay(output, { style });
+      const output = styledBuffer;
       const outputUrl = await uploadToStorage(output, `output_tier2b_${Date.now()}.jpg`);
 
       // Generate video (non-fatal)
@@ -182,8 +180,7 @@ export async function processImageNeverFail(
   try {
     console.info(JSON.stringify({ event: 'never_fail_tier3_start' }));
 
-    let cleanBuffer = await createCleanStudioShot(rawBuffer, style);
-    cleanBuffer = await addAdOverlay(cleanBuffer, { style });
+    const cleanBuffer = await createCleanStudioShot(rawBuffer, style);
     const outputUrl = await uploadToStorage(cleanBuffer, `output_tier3_${Date.now()}.jpg`);
 
     // Generate 9:16 story format (non-fatal)
@@ -200,8 +197,7 @@ export async function processImageNeverFail(
   console.info(JSON.stringify({ event: 'never_fail_tier4_start' }));
 
   try {
-    let enhancedBuffer = await createEnhancedOriginal(rawBuffer, style);
-    enhancedBuffer = await addAdOverlay(enhancedBuffer, { style });
+    const enhancedBuffer = await createEnhancedOriginal(rawBuffer, style);
     const outputUrl = await uploadToStorage(enhancedBuffer, `output_tier4_${Date.now()}.jpg`);
 
     console.info(JSON.stringify({ event: 'never_fail_tier4_success', durationMs: Date.now() - totalStart }));
