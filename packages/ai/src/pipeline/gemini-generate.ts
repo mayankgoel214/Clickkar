@@ -56,8 +56,10 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   ]);
 }
 
-// IMPORTANT: Set GEMINI_IMAGE_MODEL env var to the correct model for your Google AI account
-const GEMINI_MODEL = process.env['GEMINI_IMAGE_MODEL'] ?? 'gemini-2.0-flash-preview-image-generation';
+// IMPORTANT: Must be a function (not a const) because ESM hoists imports before dotenv loads env vars
+function getGeminiModel(): string {
+  return process.env['GEMINI_IMAGE_MODEL'] ?? 'gemini-2.0-flash-preview-image-generation';
+}
 const TIMEOUT_MS = 90_000;
 
 // ---------------------------------------------------------------------------
@@ -80,7 +82,7 @@ export async function geminiGenerateImage(
     throw new Error('Gemini image generation circuit breaker is OPEN — skipping to fallback');
   }
 
-  console.info(JSON.stringify({ event: 'gemini_generate_start', model: GEMINI_MODEL, promptLength: prompt.length }));
+  console.info(JSON.stringify({ event: 'gemini_generate_start', model: getGeminiModel(), promptLength: prompt.length }));
 
   const genAI = getGenAI();
 
@@ -91,7 +93,7 @@ export async function geminiGenerateImage(
     const inputBase64 = inputImageBuffer.toString('base64');
 
     const response = await model.generateContent({
-      model: GEMINI_MODEL,
+      model: getGeminiModel(),
       config: {
         responseModalities: [Modality.TEXT, Modality.IMAGE],
         temperature,
@@ -176,7 +178,7 @@ export async function geminiGenerateImage(
         event: 'gemini_generate_retry_error',
         attempt,
         error: errStr.slice(0, 200),
-        model: GEMINI_MODEL,
+        model: getGeminiModel(),
       }));
     }
   }
@@ -203,7 +205,7 @@ export async function geminiEditImage(
   const { originalImageBuffer, generatedImageBuffer, prompt, temperature = 0.6 } = params;
 
   const startMs = Date.now();
-  console.info(JSON.stringify({ event: 'gemini_edit_start', model: GEMINI_MODEL, promptLength: prompt.length }));
+  console.info(JSON.stringify({ event: 'gemini_edit_start', model: getGeminiModel(), promptLength: prompt.length }));
 
   const genAI = getGenAI();
 
@@ -217,7 +219,7 @@ export async function geminiEditImage(
     const generatedBase64 = generatedImageBuffer.toString('base64');
 
     const response = await model.generateContent({
-      model: GEMINI_MODEL,
+      model: getGeminiModel(),
       config: {
         responseModalities: [Modality.TEXT, Modality.IMAGE],
         temperature,

@@ -328,13 +328,27 @@ export async function onPhotoBatchTimeout(
   wa: WhatsAppClient,
 ): Promise<void> {
   const session = await prisma.session.findUnique({ where: { phoneNumber } });
-  if (!session) return;
+  if (!session) {
+    logger.warn('onPhotoBatchTimeout: session not found', { phoneNumber, expectedImageCount });
+    return;
+  }
 
   // Guard: only act if still in AWAITING_PHOTO and count hasn't grown
-  if (
-    session.state !== 'AWAITING_PHOTO' ||
-    session.imageStorageUrls.length !== expectedImageCount
-  ) {
+  if (session.state !== 'AWAITING_PHOTO') {
+    logger.info('onPhotoBatchTimeout: session no longer in AWAITING_PHOTO — skipping', {
+      phoneNumber,
+      currentState: session.state,
+      expectedImageCount,
+    });
+    return;
+  }
+
+  if (session.imageStorageUrls.length !== expectedImageCount) {
+    logger.info('onPhotoBatchTimeout: image count mismatch — stale timeout, skipping', {
+      phoneNumber,
+      currentCount: session.imageStorageUrls.length,
+      expectedImageCount,
+    });
     return;
   }
 

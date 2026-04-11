@@ -101,13 +101,26 @@ export async function processSessionTimeout(job: Job): Promise<void> {
         return;
       }
 
+      const resolvedImageCount = data.expectedImageCount ?? session.imageStorageUrls.length;
+      console.log(JSON.stringify({
+        job: job.id,
+        phoneNumber: data.phoneNumber,
+        action: data.action,
+        msg: 'Calling onPhotoBatchTimeout',
+        expectedImageCount: resolvedImageCount,
+        currentImageCount: session.imageStorageUrls.length,
+        earlyPhotoMediaId: session.earlyPhotoMediaId,
+      }));
+
       // Delegate to the session package handler
       const { onPhotoBatchTimeout } = await import('@whatsads/session');
       await onPhotoBatchTimeout(
         data.phoneNumber,
-        data.expectedImageCount ?? session.imageStorageUrls.length,
+        resolvedImageCount,
         wa,
       );
+
+      log('onPhotoBatchTimeout completed');
       break;
     }
   }
