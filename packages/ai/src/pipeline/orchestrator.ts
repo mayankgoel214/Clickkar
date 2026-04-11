@@ -19,6 +19,7 @@ export interface ProcessImageParams {
 
 export interface ProcessImageResult {
   outputUrl: string;
+  storyUrl?: string;
   videoUrl?: string;
   cutoutUrl?: string;
   studioShotUrl?: string;

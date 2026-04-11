@@ -71,6 +71,13 @@ export async function handleSetupStyle(
     return;
   }
 
+  // Smart Style: resolve to category-appropriate style before saving
+  if (styleId === ListIds.STYLE_SMART) {
+    const resolvedStyle = resolveSmartStyle(user.businessType ?? null);
+    logger.info(JSON.stringify({ event: 'smart_style_selected', category: user.businessType, resolved: resolvedStyle }));
+    styleId = resolvedStyle;
+  }
+
   const styleName = styleDisplayName(styleId, lang);
 
   // Check if this is a style-change edit (currentOrderId preserved from edit.ts)
@@ -155,7 +162,26 @@ export async function handleSetupStyle(
 
 // ---------------------------------------------------------------------------
 
+// style_smart is intentionally included so the list reply is accepted;
+// it is resolved to a concrete style before being saved to the session.
 const VALID_STYLE_IDS = new Set<string>(Object.values(ListIds).filter(id => id.startsWith('style_')));
+
+/**
+ * Resolves "Smart Style" to the best concrete style for the given product category.
+ * Must stay in sync with CATEGORY_STYLE_RECOMMENDATION in types.ts.
+ */
+function resolveSmartStyle(category: string | null): string {
+  const mapping: Record<string, string> = {
+    cat_jewellery: 'style_gradient',   // Dark luxury makes jewellery shine
+    cat_food: 'style_lifestyle',        // Food in context looks appetizing
+    cat_garment: 'style_lifestyle',     // Garments need lifestyle context
+    cat_skincare: 'style_minimal',      // Clean, premium feel for skincare
+    cat_candle: 'style_lifestyle',      // Candles in cozy settings
+    cat_bag: 'style_outdoor',          // Bags look great outdoors
+    cat_general: 'style_studio',       // Studio works for most products
+  };
+  return mapping[category ?? ''] ?? 'style_studio';
+}
 
 function resolveStyleFromText(text: string): string | null {
   if (text.includes('white') || text.includes('safed') || text.includes('clean')) return ListIds.STYLE_CLEAN_WHITE;

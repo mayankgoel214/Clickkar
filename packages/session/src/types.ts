@@ -89,15 +89,15 @@ export const ButtonIds = {
   ADD_INSTRUCTIONS: 'add_instructions',
 } as const;
 
-// Category → recommended style mapping
+// Category → recommended style mapping (must stay in sync with resolveSmartStyle in style.ts)
 export const CATEGORY_STYLE_RECOMMENDATION: Record<string, string> = {
-  cat_jewellery: 'style_studio',
+  cat_jewellery: 'style_gradient',
   cat_food: 'style_lifestyle',
-  cat_garment: 'style_clean_white',
+  cat_garment: 'style_lifestyle',
   cat_skincare: 'style_minimal',
   cat_candle: 'style_lifestyle',
   cat_bag: 'style_outdoor',
-  cat_general: 'style_clean_white',
+  cat_general: 'style_studio',
 };
 
 export const ListIds = {
@@ -110,6 +110,7 @@ export const ListIds = {
   CAT_BAG: 'cat_bag',
   CAT_GENERAL: 'cat_general',
   // Styles
+  STYLE_SMART: 'style_smart',
   STYLE_CLEAN_WHITE: 'style_clean_white',
   STYLE_LIFESTYLE: 'style_lifestyle',
   STYLE_GRADIENT: 'style_gradient',

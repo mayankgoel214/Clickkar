@@ -9,12 +9,13 @@
 
 import { processProductImageV3 } from './gemini-pipeline-v3.js';
 import type { ProcessImageParams, ProcessImageResult } from './orchestrator.js';
-import { downloadBuffer, uploadToStorage, createBriaFallbackShot, postProcessFinal, addAILabel } from './fallback.js';
+import { downloadBuffer, uploadToStorage, createBriaFallbackShot, postProcessFinal, addAILabel, addAdOverlay, generateStoryFormat } from './fallback.js';
 import { runDeterministicChecks } from '../qa/deterministic-checks.js';
 import { createStyledStudioShot, createCleanStudioShot, createEnhancedOriginal } from './styled-studio.js';
 
 export interface NeverFailResult {
   outputUrl: string;
+  storyUrl?: string;
   videoUrl?: string;
   cutoutUrl?: string;
   qaScore: number;
@@ -27,6 +28,22 @@ export interface NeverFailResult {
   inputAssessment?: any;
   rejected?: boolean;
   rejectionReason?: string;
+}
+
+/**
+ * Generate 9:16 story format from a square output buffer.
+ * Non-fatal — returns undefined on any error.
+ */
+async function tryGenerateStory(outputBuffer: Buffer, style?: string): Promise<string | undefined> {
+  try {
+    const storyBuffer = await generateStoryFormat(outputBuffer, style);
+    const storyUrl = await uploadToStorage(storyBuffer, `story_${Date.now()}.jpg`);
+    console.info(JSON.stringify({ event: 'story_format_complete' }));
+    return storyUrl;
+  } catch (err) {
+    console.warn(JSON.stringify({ event: 'story_format_failed', error: err instanceof Error ? err.message : String(err) }));
+    return undefined;
+  }
 }
 
 export async function processImageNeverFail(
@@ -60,8 +77,15 @@ export async function processImageNeverFail(
       ]);
       clearTimeout(tier1Timer!);
 
-      console.info(JSON.stringify({ event: 'never_fail_tier1_success', qaScore: result.qaScore, durationMs: Date.now() - totalStart }));
-      return { ...result, tier: 1 };
+      // Generate 9:16 story format from the square output (non-fatal)
+      let storyUrl: string | undefined;
+      try {
+        const outputBuffer = await downloadBuffer(result.outputUrl);
+        storyUrl = await tryGenerateStory(outputBuffer, style);
+      } catch { /* story is optional */ }
+
+      console.info(JSON.stringify({ event: 'never_fail_tier1_success', qaScore: result.qaScore, hasStory: !!storyUrl, durationMs: Date.now() - totalStart }));
+      return { ...result, storyUrl, tier: 1 };
     } catch (err) {
       clearTimeout(tier1Timer!);
       const reason = err instanceof Error ? err.message : String(err);
@@ -87,6 +111,7 @@ export async function processImageNeverFail(
       const briaCheck = await runDeterministicChecks(rawBuffer, briaBuffer);
       if (briaCheck.pass || briaCheck.estimatedFillPct > 15) {
         let output = await postProcessFinal(briaBuffer, style);
+        output = await addAdOverlay(output, { style });
         output = await addAILabel(output);
 
         const outputUrl = await uploadToStorage(output, `output_tier2a_${Date.now()}.jpg`);
@@ -99,8 +124,11 @@ export async function processImageNeverFail(
           videoUrl = await uploadToStorage(videoResult.videoBuffer, `video_tier2a_${Date.now()}.mp4`, 'video/mp4');
         } catch { /* video is optional */ }
 
-        console.info(JSON.stringify({ event: 'never_fail_tier2a_bria_success', durationMs: Date.now() - totalStart, qaEstimate: 65 }));
-        return { outputUrl, videoUrl, qaScore: 65, pipeline: 'bria-fallback', attempts: 0, durationMs: Date.now() - totalStart, tier: 2, tierReason: 'V3 creative failed, Bria Product Shot succeeded' };
+        // Generate 9:16 story format (non-fatal)
+        const storyUrl = await tryGenerateStory(output, style);
+
+        console.info(JSON.stringify({ event: 'never_fail_tier2a_bria_success', hasStory: !!storyUrl, durationMs: Date.now() - totalStart, qaEstimate: 65 }));
+        return { outputUrl, storyUrl, videoUrl, qaScore: 65, pipeline: 'bria-fallback', attempts: 0, durationMs: Date.now() - totalStart, tier: 2, tierReason: 'V3 creative failed, Bria Product Shot succeeded' };
       } else {
         console.warn(JSON.stringify({ event: 'never_fail_tier2a_bria_qa_fail', fillPct: briaCheck.estimatedFillPct, reason: briaCheck.failReason }));
       }
@@ -126,18 +154,23 @@ export async function processImageNeverFail(
       ]);
       clearTimeout(tier2bTimer!);
 
-      const outputUrl = await uploadToStorage(styledBuffer, `output_tier2b_${Date.now()}.jpg`);
+      let output = styledBuffer;
+      output = await addAdOverlay(output, { style });
+      const outputUrl = await uploadToStorage(output, `output_tier2b_${Date.now()}.jpg`);
 
       // Generate video (non-fatal)
       let videoUrl: string | undefined;
       try {
         const { generateKenBurnsVideo } = await import('../video/ken-burns.js');
-        const videoResult = await generateKenBurnsVideo(styledBuffer, { productCategory: category, durationSec: 5 });
+        const videoResult = await generateKenBurnsVideo(output, { productCategory: category, durationSec: 5 });
         videoUrl = await uploadToStorage(videoResult.videoBuffer, `video_tier2b_${Date.now()}.mp4`, 'video/mp4');
       } catch { /* video is optional */ }
 
-      console.info(JSON.stringify({ event: 'never_fail_tier2b_success', durationMs: Date.now() - totalStart }));
-      return { outputUrl, videoUrl, qaScore: 50, pipeline: 'styled-studio', attempts: 0, durationMs: Date.now() - totalStart, tier: 2, tierReason: 'V3 creative + Bria failed, styled studio succeeded' };
+      // Generate 9:16 story format (non-fatal)
+      const storyUrl = await tryGenerateStory(output, style);
+
+      console.info(JSON.stringify({ event: 'never_fail_tier2b_success', hasStory: !!storyUrl, durationMs: Date.now() - totalStart }));
+      return { outputUrl, storyUrl, videoUrl, qaScore: 50, pipeline: 'styled-studio', attempts: 0, durationMs: Date.now() - totalStart, tier: 2, tierReason: 'V3 creative + Bria failed, styled studio succeeded' };
     } catch (err) {
       clearTimeout(tier2bTimer!);
       const reason = err instanceof Error ? err.message : String(err);
@@ -149,11 +182,15 @@ export async function processImageNeverFail(
   try {
     console.info(JSON.stringify({ event: 'never_fail_tier3_start' }));
 
-    const cleanBuffer = await createCleanStudioShot(rawBuffer, style);
+    let cleanBuffer = await createCleanStudioShot(rawBuffer, style);
+    cleanBuffer = await addAdOverlay(cleanBuffer, { style });
     const outputUrl = await uploadToStorage(cleanBuffer, `output_tier3_${Date.now()}.jpg`);
 
-    console.info(JSON.stringify({ event: 'never_fail_tier3_success', durationMs: Date.now() - totalStart }));
-    return { outputUrl, qaScore: 30, pipeline: 'clean-studio', attempts: 0, durationMs: Date.now() - totalStart, tier: 3, tierReason: 'BiRefNet cutout also failed' };
+    // Generate 9:16 story format (non-fatal)
+    const storyUrl = await tryGenerateStory(cleanBuffer, style);
+
+    console.info(JSON.stringify({ event: 'never_fail_tier3_success', hasStory: !!storyUrl, durationMs: Date.now() - totalStart }));
+    return { outputUrl, storyUrl, qaScore: 30, pipeline: 'clean-studio', attempts: 0, durationMs: Date.now() - totalStart, tier: 3, tierReason: 'BiRefNet cutout also failed' };
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
     console.warn(JSON.stringify({ event: 'never_fail_tier3_failed', reason: reason.slice(0, 200), durationMs: Date.now() - totalStart }));
@@ -163,7 +200,8 @@ export async function processImageNeverFail(
   console.info(JSON.stringify({ event: 'never_fail_tier4_start' }));
 
   try {
-    const enhancedBuffer = await createEnhancedOriginal(rawBuffer, style);
+    let enhancedBuffer = await createEnhancedOriginal(rawBuffer, style);
+    enhancedBuffer = await addAdOverlay(enhancedBuffer, { style });
     const outputUrl = await uploadToStorage(enhancedBuffer, `output_tier4_${Date.now()}.jpg`);
 
     console.info(JSON.stringify({ event: 'never_fail_tier4_success', durationMs: Date.now() - totalStart }));

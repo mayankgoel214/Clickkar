@@ -35,6 +35,7 @@ export async function sendProcessedImages(
   userName: string | undefined,
   wa: WhatsAppClient,
   videoUrls?: string[],
+  storyUrls?: string[],
 ): Promise<void> {
   logger.info('Delivering processed images', { phoneNumber, count: outputImageUrls.length, videoCount: videoUrls?.length ?? 0 });
 
@@ -61,6 +62,17 @@ export async function sendProcessedImages(
         ? 'Bonus: Aapka product video ad!'
         : 'Bonus: Your product video ad!';
       await wa.sendVideo(phoneNumber, vUrl, videoCaption);
+    }
+  }
+
+  // Send 9:16 story format images
+  if (storyUrls && storyUrls.length > 0) {
+    await sleep(2000);
+    for (const sUrl of storyUrls) {
+      const storyCaption = language === 'hi'
+        ? 'Story format (9:16) — Instagram Stories & WhatsApp Status ke liye!'
+        : 'Story format (9:16) — perfect for Instagram Stories & WhatsApp Status!';
+      await wa.sendImage(phoneNumber, sUrl, storyCaption);
     }
   }
 

@@ -93,6 +93,20 @@ export async function processImageJob(job: Job): Promise<void> {
       }
     }
 
+    // Handle story URL (9:16 format)
+    let storyUrl: string | undefined;
+    if (result.storyUrl) {
+      if (result.storyUrl.includes('supabase.co')) {
+        storyUrl = result.storyUrl;
+      } else try {
+        const storyPath = `${data.orderId}/${data.imageJobId}-story.jpg`;
+        const storyBuffer = await fetch(result.storyUrl).then((r) => r.arrayBuffer());
+        storyUrl = await uploadFile(Buckets.PROCESSED_IMAGES, storyPath, Buffer.from(storyBuffer), 'image/jpeg');
+      } catch {
+        storyUrl = result.storyUrl;
+      }
+    }
+
     // Handle video URL (if Ken Burns was generated)
     let videoUrl: string | undefined;
     if (result.videoUrl) {
@@ -212,6 +226,7 @@ export async function processImageJob(job: Job): Promise<void> {
               user?.name ?? undefined,
               wa,
               videoUrl ? [videoUrl] : [],
+              storyUrl ? [storyUrl] : [],
             );
             if (user) {
               await prisma.session.updateMany({
@@ -239,6 +254,7 @@ export async function processImageJob(job: Job): Promise<void> {
           user?.name ?? undefined,
           wa,
           videoUrl ? [videoUrl] : [],
+          storyUrl ? [storyUrl] : [],
         );
 
         // Transition session to DELIVERED from PROCESSING, EDIT_PROCESSING, or IDLE

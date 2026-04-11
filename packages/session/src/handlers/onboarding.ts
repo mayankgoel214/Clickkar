@@ -306,6 +306,11 @@ export async function sendStyleList(
       {
         title: 'Styles',
         rows: [
+          {
+            id: ListIds.STYLE_SMART,
+            title: '✨ Smart Style',
+            description: lang === 'hi' ? 'AI aapke product ke liye best style chunega' : 'AI picks the best style for your product',
+          },
           { id: ListIds.STYLE_CLEAN_WHITE, title: styleDisplayName(ListIds.STYLE_CLEAN_WHITE, lang), description: makeDesc(ListIds.STYLE_CLEAN_WHITE, 'Pure white background') },
           { id: ListIds.STYLE_LIFESTYLE, title: styleDisplayName(ListIds.STYLE_LIFESTYLE, lang), description: makeDesc(ListIds.STYLE_LIFESTYLE, 'Real-life setting') },
           { id: ListIds.STYLE_GRADIENT, title: styleDisplayName(ListIds.STYLE_GRADIENT, lang), description: makeDesc(ListIds.STYLE_GRADIENT, 'Cinematic dark & dramatic') },

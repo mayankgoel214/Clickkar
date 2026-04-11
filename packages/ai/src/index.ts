@@ -45,6 +45,12 @@ export {
   createEnhancedOriginal,
 } from './pipeline/styled-studio.js';
 
+// Story format (9:16) generation + ad text overlay
+export {
+  generateStoryFormat,
+  addAdOverlay,
+} from './pipeline/fallback.js';
+
 // ---------------------------------------------------------------------------
 // Product Analysis
 // ---------------------------------------------------------------------------

@@ -259,6 +259,7 @@ export function msgEarlyPhotoAck(lang: Lang): string {
 
 export function styleDisplayName(styleId: string, lang: Lang): string {
   const names: Record<string, { hi: string; en: string }> = {
+    style_smart: { hi: '✨ Smart Style', en: '✨ Smart Style' },
     style_clean_white: { hi: 'Saaf Safed Background', en: 'Clean White Background' },
     style_lifestyle: { hi: 'Lifestyle Setting', en: 'Lifestyle Setting' },
     style_gradient: { hi: 'Dark Luxury', en: 'Dark Luxury' },

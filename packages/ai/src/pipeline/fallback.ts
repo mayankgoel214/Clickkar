@@ -193,6 +193,115 @@ export async function addAILabel(imageBuffer: Buffer): Promise<Buffer> {
 }
 
 // ===========================================================================
+// AD TEXT OVERLAY: Product name + brand text on finished ad creatives
+// ===========================================================================
+
+function escapeXml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+/**
+ * Composite marketing text (product name + brand) onto a finished product photo.
+ * Uses Sharp SVG overlays — same pattern as addAILabel.
+ *
+ * Returns the buffer unchanged if no text data is provided.
+ */
+export async function addAdOverlay(
+  imageBuffer: Buffer,
+  options: {
+    productName?: string;
+    brandName?: string;
+    style?: string;
+  }
+): Promise<Buffer> {
+  if (!options.productName && !options.brandName) return imageBuffer;
+
+  const meta = await sharp(imageBuffer).metadata();
+  const w = meta.width ?? 1024;
+  const h = meta.height ?? 1024;
+
+  const overlays: Array<{ input: Buffer; blend?: string }> = [];
+
+  // Determine text color based on style (light text for dark styles, dark for light)
+  const isDarkStyle = ['style_gradient', 'style_festive'].includes(options.style ?? '');
+  const isCleanWhite = options.style === 'style_clean_white';
+  const textColor = isDarkStyle ? '#FFFFFF' : isCleanWhite ? '#1A1A1A' : '#FFFFFF';
+  const shadowColor = isDarkStyle ? 'rgba(0,0,0,0.6)' : isCleanWhite ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.6)';
+
+  // Add a subtle gradient overlay at the bottom for text readability
+  // Only for non-clean-white styles
+  if (!isCleanWhite && options.productName) {
+    const gradientSvg = `<svg width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="black" stop-opacity="0"/>
+          <stop offset="70%" stop-color="black" stop-opacity="0"/>
+          <stop offset="100%" stop-color="black" stop-opacity="0.45"/>
+        </linearGradient>
+      </defs>
+      <rect width="${w}" height="${h}" fill="url(#g)"/>
+    </svg>`;
+    overlays.push({ input: Buffer.from(gradientSvg), blend: 'over' });
+  }
+
+  // Build text SVG overlay
+  const textElements: string[] = [];
+
+  // Product name — bold, bottom area
+  if (options.productName) {
+    // Truncate long names
+    let displayName = options.productName;
+    if (displayName.length > 40) {
+      displayName = displayName.substring(0, 37) + '...';
+    }
+
+    const fontSize = Math.round(w * 0.038); // ~39px at 1024w
+    const nameY = Math.round(h * 0.88);
+
+    // Text shadow for readability
+    textElements.push(`<text x="${Math.round(w * 0.05) + 1}" y="${nameY + 1}"
+      font-family="Arial, Helvetica, sans-serif" font-weight="700" font-size="${fontSize}"
+      fill="${shadowColor}" letter-spacing="0.5">${escapeXml(displayName)}</text>`);
+    // Actual text
+    textElements.push(`<text x="${Math.round(w * 0.05)}" y="${nameY}"
+      font-family="Arial, Helvetica, sans-serif" font-weight="700" font-size="${fontSize}"
+      fill="${textColor}" letter-spacing="0.5">${escapeXml(displayName)}</text>`);
+  }
+
+  // Brand name — smaller, below product name
+  if (options.brandName && options.brandName !== options.productName) {
+    const brandSize = Math.round(w * 0.025); // ~26px at 1024w
+    const brandY = Math.round(h * 0.93);
+
+    textElements.push(`<text x="${Math.round(w * 0.05) + 1}" y="${brandY + 1}"
+      font-family="Arial, Helvetica, sans-serif" font-weight="400" font-size="${brandSize}"
+      fill="${shadowColor}" letter-spacing="1">${escapeXml(options.brandName.toUpperCase())}</text>`);
+    textElements.push(`<text x="${Math.round(w * 0.05)}" y="${brandY}"
+      font-family="Arial, Helvetica, sans-serif" font-weight="400" font-size="${brandSize}"
+      fill="${textColor}" letter-spacing="1">${escapeXml(options.brandName.toUpperCase())}</text>`);
+  }
+
+  if (textElements.length > 0) {
+    const textSvg = `<svg width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg">
+      ${textElements.join('\n')}
+    </svg>`;
+    overlays.push({ input: Buffer.from(textSvg), blend: 'over' });
+  }
+
+  if (overlays.length === 0) return imageBuffer;
+
+  return sharp(imageBuffer)
+    .composite(overlays.map(o => ({ input: o.input, blend: (o.blend ?? 'over') as any })))
+    .jpeg({ quality: 92 })
+    .toBuffer();
+}
+
+// ===========================================================================
 // REFINEMENT PIPELINE: Kontext + CodeFormer + ESRGAN
 // ===========================================================================
 
@@ -1209,6 +1318,77 @@ export async function createBriaFallbackShot(
   const outputBuffer = await downloadBuffer(outputUrl);
   console.info(JSON.stringify({ event: 'bria_fallback_complete', durationMs: Date.now() - startMs }));
   return outputBuffer;
+}
+
+// ---------------------------------------------------------------------------
+// Story Format (9:16) — extends square ad to Instagram Stories / WhatsApp Status
+// ---------------------------------------------------------------------------
+
+/**
+ * Takes a square (1:1) product ad and creates a 1080x1920 (9:16) story format.
+ * Extends the background using dominant color sampling and gradient blending.
+ * Product is placed slightly below center, leaving space at top for text overlays.
+ *
+ * ~200ms sharp-only operation, zero API cost.
+ */
+export async function generateStoryFormat(
+  squareBuffer: Buffer,
+  _style?: string,
+): Promise<Buffer> {
+  const STORY_W = 1080;
+  const STORY_H = 1920;
+
+  // Resize the square image to fit the story width
+  const resized = await sharp(squareBuffer)
+    .resize(STORY_W, STORY_W, { fit: 'cover' })
+    .toBuffer();
+
+  // Sample the edges of the resized image to get the dominant background color
+  const { dominant } = await sharp(resized).stats();
+  const bgColor = {
+    r: Math.round(dominant.r),
+    g: Math.round(dominant.g),
+    b: Math.round(dominant.b),
+  };
+
+  // Create the story canvas with the dominant background color
+  const canvas = await sharp({
+    create: {
+      width: STORY_W,
+      height: STORY_H,
+      channels: 3,
+      background: bgColor,
+    },
+  })
+    .jpeg({ quality: 92 })
+    .toBuffer();
+
+  // Gradient overlays that blend the product image edges into the solid background
+  const gradientSvg = `<svg width="${STORY_W}" height="${STORY_H}" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <linearGradient id="topFade" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="rgb(${bgColor.r},${bgColor.g},${bgColor.b})" stop-opacity="1"/>
+        <stop offset="100%" stop-color="rgb(${bgColor.r},${bgColor.g},${bgColor.b})" stop-opacity="0"/>
+      </linearGradient>
+      <linearGradient id="bottomFade" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="rgb(${bgColor.r},${bgColor.g},${bgColor.b})" stop-opacity="0"/>
+        <stop offset="100%" stop-color="rgb(${bgColor.r},${bgColor.g},${bgColor.b})" stop-opacity="1"/>
+      </linearGradient>
+    </defs>
+    <rect y="0" width="${STORY_W}" height="200" fill="url(#topFade)"/>
+    <rect y="${STORY_H - 200}" width="${STORY_W}" height="200" fill="url(#bottomFade)"/>
+  </svg>`;
+
+  // Position the square image slightly below center — leaves more space at top for text
+  const topOffset = Math.round((STORY_H - STORY_W) * 0.45);
+
+  return sharp(canvas)
+    .composite([
+      { input: resized, top: topOffset, left: 0 },
+      { input: Buffer.from(gradientSvg), blend: 'over' as const },
+    ])
+    .jpeg({ quality: 92 })
+    .toBuffer();
 }
 
 // ---------------------------------------------------------------------------
