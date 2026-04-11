@@ -471,6 +471,16 @@ What single EMOTIONAL MOMENT should this ad capture? Not "product on a nice back
 ### 5b: Dynamic Elements
 What specific MOTION, TEXTURE, or ACTION elements make this ad come alive? These are the details that separate a boring product photo from a COMPELLING advertisement. Examples: water splashes, crumbs scattered, steam rising, condensation droplets, ingredients mid-fall, fabric draping, sparkle on gems, smoke wisps, liquid pouring.
 
+- VARIETY IN DYNAMIC ELEMENTS: Do NOT default to "mist" or "fog" for every style. Each style should have its own signature dynamic elements:
+  - Clean White: subtle reflection/shadow ONLY — no mist, no fog, no particles
+  - Studio: light play on colored surface, product shadow — no mist
+  - Gradient/Dark Luxury: splashes, particles, rim-light flares — mist is OK here
+  - Lifestyle: steam from coffee, crumbs, spilled ingredients — contextual to the product's USE
+  - Outdoor: wind-blown elements, natural light flares, pollen — no artificial mist
+  - Festive: diya smoke, floating petals, sparkles — no cold mist
+  - Minimal: shadow ONLY — absolutely nothing else in the scene
+  - With Model: person's natural environment — no artificial atmospheric effects
+
 The style is FIXED as ${styleKey}. You MUST use ONLY these elements — do NOT invent a different setting or context.
 IMPORTANT: If the product is a cold beverage (isColdBeverage = true), you MUST use the BEVERAGE_COLD narrative instead of the DEFAULT narrative:
 ${narrativeEntries}
@@ -508,6 +518,7 @@ If this product is a cold beverage (isColdBeverage = true), ALL of the following
 
 ## RULES FOR THE CREATIVE BRIEF:
 CRITICAL CONSTRAINT FOR CREATIVE BRIEF: The creative brief must NEVER describe the product differently from how it appears in the input photo. Do not invent details, simplify the product, or change its design. The brief should describe the SCENE and ENVIRONMENT around the product, not redesign the product itself. Every physical detail of the product (shape, color, material, components, text) must remain exactly as photographed.
+- CONDENSATION/WATER DROPLETS: Only add condensation, water droplets, or dewy surfaces if the product is a BEVERAGE CONTAINER (bottle, tumbler, can, glass) or a FOOD/DRINK product. For ALL other product categories (jewellery, electronics, candles, bags, garments, skincare, home decor), the product surface must remain DRY. Do not add water droplets to products that would never be wet in real life.
 - EXACTLY ONE product in the image — NEVER duplicate or clone
 - Product is the HERO — fills the recommended canvas percentage
 - Product MUST obey gravity (lies flat, leans, or stands on base)

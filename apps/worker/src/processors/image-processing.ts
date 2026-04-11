@@ -177,15 +177,46 @@ export async function processImageJob(job: Job): Promise<void> {
             processingCompletedAt: new Date(),
           },
         });
-        if (updated.count === 0) {
-          log('Order already completed by another worker, skipping delivery');
-          return;
-        }
 
-        // Send results via WhatsApp
+        // Fetch the user record — needed for both delivery paths below
         const user = await prisma.user.findUnique({
           where: { phoneNumber: data.phoneNumber },
         });
+
+        if (updated.count === 0) {
+          // Order was already completed (e.g. by another worker, or by a previous delivery run).
+          // For style-change edits the session will be in EDIT_PROCESSING — we still need to
+          // send the new output and feedback buttons so the user sees the updated result.
+          const currentSession = user
+            ? await prisma.session.findFirst({ where: { userId: user.id } })
+            : null;
+
+          const isStyleChangeEdit = currentSession?.state === 'EDIT_PROCESSING';
+          if (isStyleChangeEdit) {
+            log('Style-change edit delivery — order already marked complete, sending output and feedback buttons');
+            const wa = new WhatsAppClient({
+              accessToken: config.WHATSAPP_ACCESS_TOKEN,
+              phoneNumberId: config.WHATSAPP_PHONE_NUMBER_ID,
+            });
+            await sendProcessedImages(
+              data.phoneNumber,
+              [outputUrl],
+              (user?.language as 'hi' | 'en') || 'hi',
+              user?.name ?? undefined,
+              wa,
+              videoUrl ? [videoUrl] : [],
+            );
+            if (user) {
+              await prisma.session.updateMany({
+                where: { userId: user.id, state: 'EDIT_PROCESSING' },
+                data: { state: 'DELIVERED', stateEnteredAt: new Date() },
+              });
+            }
+          } else {
+            log('Order already completed by another worker, skipping delivery');
+          }
+          return;
+        }
 
         const wa = new WhatsAppClient({
           accessToken: config.WHATSAPP_ACCESS_TOKEN,

@@ -282,6 +282,19 @@ export async function processProductImageV3(
     const isCleanWhite = params.style === 'style_clean_white';
     const isLifestyle = params.style === 'style_lifestyle';
 
+    // Condensation is only appropriate for beverage/food products
+    const productTypeLower = (validPlan.analysis?.productType ?? '').toLowerCase();
+    const allowCondensation = validPlan.isColdBeverage ||
+      validPlan.productCategory === 'food' ||
+      productTypeLower.includes('bottle') ||
+      productTypeLower.includes('tumbler') ||
+      productTypeLower.includes('flask') ||
+      productTypeLower.includes('cup') ||
+      productTypeLower.includes('glass') ||
+      productTypeLower.includes('can') ||
+      productTypeLower.includes('beverage') ||
+      productTypeLower.includes('drink');
+
     const componentsList = validPlan.analysis?.productComponents?.length
       ? `Detected components from input photo: ${validPlan.analysis.productComponents.join(', ')}.`
       : '';
@@ -327,6 +340,7 @@ The product must look like a REAL PHYSICAL OBJECT photographed by a camera — N
 - SURFACE QUALITY: Every material must have photographic micro-texture visible. Plastic catches light at sharp specular points. Glass has reflections. Metal has sheen. Paper has fiber grain. Fabric has weave. Nothing is uniformly smooth or matte like a CGI render.
 - LIGHTING ON PRODUCT: The product MUST be lit by the SAME light source as the scene. If the scene has warm side-lighting from the left, the product must have matching highlights on the left and shadows on the right. Consistent shadow direction throughout.
 - The product should look PREMIUM and BEAUTIFUL — like a high-end photoshoot — but still clearly a photograph of a physical object, not a digital illustration.
+${allowCondensation ? '- CONDENSATION RULE: Condensation and water droplets on the product surface are encouraged — they convey freshness and cold temperature.' : '- CONDENSATION RULE: ABSOLUTELY NO condensation, water droplets, dew, or moisture on the product surface. This product should be completely DRY. A dry product with good lighting looks more premium than a wet product that should not be wet.'}
 
 == RULES ==
 ${isFestive ? `== MANDATORY FESTIVE SCENE ==
