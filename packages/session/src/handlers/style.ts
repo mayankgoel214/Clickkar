@@ -10,8 +10,8 @@ import type { Session, User } from '@whatsads/db';
 import { prisma } from '@whatsads/db';
 import { getImageQueue } from '@whatsads/queue';
 import { transitionTo } from '../db-helpers.js';
-import { styleDisplayName, msgSendPhoto } from '../messages.js';
-import { ListIds, ButtonIds } from '../types.js';
+import { styleDisplayName, msgSendPhoto, msgRevisionLimitReached } from '../messages.js';
+import { ListIds, ButtonIds, FREE_REVISIONS_PER_ORDER } from '../types.js';
 import type { MessageContext } from '../types.js';
 import { logger } from '../logger.js';
 
@@ -77,6 +77,13 @@ export async function handleSetupStyle(
   if (session.currentOrderId) {
     const order = await prisma.order.findUnique({ where: { id: session.currentOrderId } });
     if (order && order.inputImageUrls.length > 0) {
+      // Check revision limits before reprocessing
+      if (order.revisionsUsed >= FREE_REVISIONS_PER_ORDER) {
+        await wa.sendText(phoneNumber, msgRevisionLimitReached(lang));
+        await transitionTo(phoneNumber, 'DELIVERED');
+        return;
+      }
+
       // Style-change edit: reuse existing photos, enqueue reprocessing immediately
       await wa.sendText(
         phoneNumber,

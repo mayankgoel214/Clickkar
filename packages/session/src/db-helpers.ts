@@ -85,6 +85,7 @@ export async function transitionTo(
   }
 }
 
+// @deprecated — unused, consider removing
 /**
  * Touch session timing fields on every inbound message.
  * Does NOT change state.
@@ -114,6 +115,7 @@ export async function getOrCreateUser(phoneNumber: string): Promise<User> {
   });
 }
 
+// @deprecated — unused, consider removing
 export async function getUser(phoneNumber: string): Promise<User | null> {
   return prisma.user.findUnique({ where: { phoneNumber } });
 }
@@ -146,9 +148,17 @@ export async function checkAndMarkProcessed(messageId: string): Promise<boolean>
   try {
     await prisma.processedMessage.create({ data: { messageId } });
     return false; // New — not yet processed
-  } catch {
-    // Unique constraint violation means we already processed this message
-    return true;
+  } catch (err: unknown) {
+    // P2002 = unique constraint violation = duplicate message
+    if (err && typeof err === 'object' && 'code' in err && (err as any).code === 'P2002') {
+      return true; // Already processed
+    }
+    // Any other error is a real DB failure — log and re-throw
+    console.error(JSON.stringify({
+      event: 'processed_message_check_failed',
+      error: err instanceof Error ? err.message : String(err),
+    }));
+    throw err; // Let the caller handle it
   }
 }
 
@@ -156,6 +166,7 @@ export async function checkAndMarkProcessed(messageId: string): Promise<boolean>
 // Session language helper
 // ---------------------------------------------------------------------------
 
+// @deprecated — unused, consider removing
 /**
  * Resolve the language to use for a phone number.
  * Falls back to 'hi' if no user record exists yet.

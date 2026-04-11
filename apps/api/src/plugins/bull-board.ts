@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'crypto';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { createBullBoard } from '@bull-board/api';
 import { BullMQAdapter } from '@bull-board/api/bullMQAdapter';
@@ -14,7 +15,13 @@ export async function registerBullBoard(app: FastifyInstance): Promise<void> {
     if (!req.url.startsWith('/admin/queues')) return;
     if (process.env.NODE_ENV === 'production') {
       const secret = req.headers['x-admin-secret'];
-      if (!secret || secret !== process.env.ADMIN_SECRET) {
+      const expected = process.env.ADMIN_SECRET ?? '';
+      if (
+        !secret ||
+        !expected ||
+        Buffer.byteLength(secret as string) !== Buffer.byteLength(expected) ||
+        !timingSafeEqual(Buffer.from(secret as string), Buffer.from(expected))
+      ) {
         return reply.code(403).send({ error: 'Forbidden', code: 'ADMIN_AUTH_REQUIRED' });
       }
     }

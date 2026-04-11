@@ -154,6 +154,7 @@ model Order {
   @@index([phoneNumber])
   @@index([status])
   @@index([createdAt])
+  @@index([razorpayPaymentLinkId])
   @@map("orders")
 }
 

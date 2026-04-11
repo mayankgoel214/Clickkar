@@ -172,9 +172,9 @@ export function msgProcessingDelay(lang: Lang): string {
 
 export function msgProcessingStuck(lang: Lang): string {
   if (lang === 'hi') {
-    return 'Arre! Kuch gadbad ho gayi. 😔\nEk baar aur try kar raha hun — 2 minute mein ready hoga.';
+    return "Arre! Kuch gadbad ho gayi. Kripya dobara try karein — 'hi' bhej ke naya order shuru karein.";
   }
-  return 'Oops! Something went wrong. 😔\nRetrying now — should be ready in 2 minutes.';
+  return "Oops! Something went wrong. Please try again — send 'hi' to start a new order.";
 }
 
 // ---------------------------------------------------------------------------

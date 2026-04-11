@@ -14,22 +14,27 @@ import { prisma } from '@whatsads/db';
 import { getConfig } from '../../config.js';
 
 // ---------------------------------------------------------------------------
-// Simple in-memory rate limiter: max 60 requests/minute per IP
+// Simple in-memory rate limiter: max 120 requests/minute per sender phone number
+//
+// NOTE: All WhatsApp webhooks originate from Meta's IP addresses, so using
+// req.ip would bucket every user together. We key on the sender's phone number
+// instead, extracted from the payload before rate-limiting.
+// Status-only webhooks (no message) are skipped entirely.
 // ---------------------------------------------------------------------------
 
-const RATE_LIMIT_MAX = 60;
+const RATE_LIMIT_MAX = 120;
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const rateLimitMap = new Map<string, number[]>();
 
 // Purge stale entries every 60 seconds to prevent unbounded memory growth.
 setInterval(() => {
   const cutoff = Date.now() - RATE_LIMIT_WINDOW_MS;
-  for (const [ip, timestamps] of rateLimitMap) {
+  for (const [key, timestamps] of rateLimitMap) {
     const fresh = timestamps.filter(t => t > cutoff);
     if (fresh.length === 0) {
-      rateLimitMap.delete(ip);
+      rateLimitMap.delete(key);
     } else {
-      rateLimitMap.set(ip, fresh);
+      rateLimitMap.set(key, fresh);
     }
   }
   // Nuclear option: if the map is still enormous, clear it entirely.
@@ -38,13 +43,27 @@ setInterval(() => {
   }
 }, 60_000).unref();
 
-function isRateLimited(ip: string): boolean {
+function isRateLimited(key: string): boolean {
   const now = Date.now();
   const cutoff = now - RATE_LIMIT_WINDOW_MS;
-  const timestamps = (rateLimitMap.get(ip) ?? []).filter(t => t > cutoff);
+  const timestamps = (rateLimitMap.get(key) ?? []).filter(t => t > cutoff);
   timestamps.push(now);
-  rateLimitMap.set(ip, timestamps);
+  rateLimitMap.set(key, timestamps);
   return timestamps.length > RATE_LIMIT_MAX;
+}
+
+/**
+ * Extract the sender's phone number from the raw webhook payload without
+ * running the full extractMessage() logic. Returns null for status-only
+ * payloads (delivery receipts etc.) that carry no message.
+ */
+function extractSenderPhone(body: unknown): string | null {
+  try {
+    const b = body as any;
+    return b?.entry?.[0]?.changes?.[0]?.value?.messages?.[0]?.from ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export async function whatsappWebhookRoutes(app: FastifyInstance): Promise<void> {
@@ -73,10 +92,11 @@ export async function whatsappWebhookRoutes(app: FastifyInstance): Promise<void>
   // -------------------------------------------------------------------------
 
   app.post('/webhooks/whatsapp', async (req: FastifyRequest, reply: FastifyReply) => {
-    // Rate limiting: 60 req/min per IP
-    const ip = req.ip ?? 'unknown';
-    if (isRateLimited(ip)) {
-      app.log.warn({ ip }, 'WhatsApp webhook rate limit exceeded');
+    // Rate limiting: 120 req/min per sender phone number.
+    // Status-only webhooks (no messages[0]) have no sender — skip rate limiting for those.
+    const senderPhone = extractSenderPhone(req.body);
+    if (senderPhone !== null && isRateLimited(senderPhone)) {
+      app.log.warn({ phoneNumber: senderPhone }, 'WhatsApp webhook rate limit exceeded');
       return reply.code(429).send({ error: 'Too many requests', code: 'RATE_LIMITED' });
     }
 

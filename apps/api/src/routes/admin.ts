@@ -3,6 +3,7 @@
  * Reset test user data with: curl -X POST http://localhost:3001/admin/reset/PHONE_NUMBER
  */
 
+import { timingSafeEqual } from 'crypto';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { getConfig } from '../config.js';
 import { prisma } from '@whatsads/db';
@@ -57,7 +58,13 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     const config = getConfig();
     if (config.NODE_ENV === 'production') {
       const secret = req.headers['x-admin-secret'];
-      if (!secret || secret !== config.ADMIN_SECRET) {
+      const expected = config.ADMIN_SECRET ?? '';
+      if (
+        !secret ||
+        !expected ||
+        Buffer.byteLength(secret as string) !== Buffer.byteLength(expected) ||
+        !timingSafeEqual(Buffer.from(secret as string), Buffer.from(expected))
+      ) {
         return reply.code(403).send({ error: 'Forbidden', code: 'ADMIN_AUTH_REQUIRED' });
       }
     }

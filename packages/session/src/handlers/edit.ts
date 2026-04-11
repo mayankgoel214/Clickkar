@@ -73,7 +73,7 @@ export async function handleAwaitingEdit(
 
     switch (replyId) {
       case 'edit_background':
-        editStyle = 'change_background';
+        editInstructions = 'Change the background to something completely different while keeping the product exactly the same. Make the new background complement the product.';
         break;
 
       case 'edit_style':
@@ -116,7 +116,11 @@ export async function handleAwaitingEdit(
   // Handle voice note edit instructions
   if (message.messageType === 'audio' && message.mediaId) {
     try {
-      const accessToken = process.env.WHATSAPP_ACCESS_TOKEN!;
+      const accessToken = process.env.WHATSAPP_ACCESS_TOKEN ?? process.env['WHATSAPP_ACCESS_TOKEN'] ?? '';
+      if (!accessToken) {
+        console.error(JSON.stringify({ event: 'missing_whatsapp_access_token' }));
+        throw new Error('WHATSAPP_ACCESS_TOKEN is not configured');
+      }
       const { buffer, mimeType } = await downloadMedia(message.mediaId, accessToken);
 
       const storagePath = `${session.phoneNumber}/${Date.now()}-edit.ogg`;

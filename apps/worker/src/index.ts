@@ -4,6 +4,7 @@ loadEnv({ path: resolve(import.meta.dirname, '../../../.env'), override: true })
 
 import { Worker } from 'bullmq';
 import { getRedisConnection, QueueNames } from '@whatsads/queue';
+import { prisma } from '@whatsads/db';
 import { getConfig } from './config.js';
 import { processImageJob } from './processors/image-processing.js';
 import { processPaymentCheck } from './processors/payment-check.js';
@@ -87,6 +88,7 @@ async function main() {
       ),
     );
 
+    await prisma.$disconnect();
     process.exit(0);
   };
 

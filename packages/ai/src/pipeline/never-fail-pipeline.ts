@@ -109,9 +109,23 @@ export async function processImageNeverFail(
   // ── Tier 4: Enhanced Original (always works) ──────────────────────
   console.info(JSON.stringify({ event: 'never_fail_tier4_start' }));
 
-  const enhancedBuffer = await createEnhancedOriginal(rawBuffer, style);
-  const outputUrl = await uploadToStorage(enhancedBuffer, `output_tier4_${Date.now()}.jpg`);
+  try {
+    const enhancedBuffer = await createEnhancedOriginal(rawBuffer, style);
+    const outputUrl = await uploadToStorage(enhancedBuffer, `output_tier4_${Date.now()}.jpg`);
 
-  console.info(JSON.stringify({ event: 'never_fail_tier4_success', durationMs: Date.now() - totalStart }));
-  return { outputUrl, qaScore: 10, pipeline: 'enhanced-original', attempts: 0, durationMs: Date.now() - totalStart, tier: 4, tierReason: 'All processing tiers failed — delivering enhanced original' };
+    console.info(JSON.stringify({ event: 'never_fail_tier4_success', durationMs: Date.now() - totalStart }));
+    return { outputUrl, qaScore: 10, pipeline: 'enhanced-original', attempts: 0, durationMs: Date.now() - totalStart, tier: 4, tierReason: 'All processing tiers failed — delivering enhanced original' };
+  } catch (tier4Err) {
+    console.error(JSON.stringify({ event: 'tier4_failed', error: tier4Err instanceof Error ? tier4Err.message : String(tier4Err), durationMs: Date.now() - totalStart }));
+
+    // Absolute last resort: upload the raw input buffer as-is
+    try {
+      const outputUrl = await uploadToStorage(rawBuffer, `output_raw_${Date.now()}.jpg`);
+      console.info(JSON.stringify({ event: 'never_fail_raw_upload_success', durationMs: Date.now() - totalStart }));
+      return { outputUrl, qaScore: 5, pipeline: 'raw-input', attempts: 0, durationMs: Date.now() - totalStart, tier: 4, tierReason: 'All processing tiers including enhanced-original failed — delivering raw input' };
+    } catch (rawErr) {
+      // If even raw upload fails, there is nothing we can do
+      throw new Error(`All pipeline tiers including raw upload failed: ${rawErr instanceof Error ? rawErr.message : String(rawErr)}`);
+    }
+  }
 }

@@ -28,9 +28,16 @@ export interface GeminiGenerateResult {
 // Helpers
 // ---------------------------------------------------------------------------
 
+function getApiKey(): string {
+  const key = process.env['GOOGLE_AI_API_KEY'] ?? process.env['GOOGLE_GENAI_API_KEY'] ?? '';
+  if (!key) {
+    throw new Error('GOOGLE_AI_API_KEY environment variable is not set');
+  }
+  return key;
+}
+
 function getGenAI(): GoogleGenAI {
-  const apiKey = process.env['GOOGLE_AI_API_KEY'] ?? process.env['GOOGLE_GENAI_API_KEY'] ?? '';
-  return new GoogleGenAI({ apiKey });
+  return new GoogleGenAI({ apiKey: getApiKey() });
 }
 
 function detectMime(buf: Buffer): string {
@@ -49,7 +56,8 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   ]);
 }
 
-const GEMINI_MODEL = process.env['GEMINI_IMAGE_MODEL'] ?? 'gemini-3.1-flash-image-preview';
+// IMPORTANT: Set GEMINI_IMAGE_MODEL env var to the correct model for your Google AI account
+const GEMINI_MODEL = process.env['GEMINI_IMAGE_MODEL'] ?? 'gemini-2.0-flash-preview-image-generation';
 const TIMEOUT_MS = 90_000;
 
 // ---------------------------------------------------------------------------

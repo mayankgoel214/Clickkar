@@ -97,7 +97,8 @@ export async function handleAwaitingPhoto(
     const currentCount = session.imageStorageUrls.length;
 
     if (currentCount >= MAX_IMAGES_PER_ORDER) {
-      // Already at max — ignore additional photos
+      // Fast path: in-memory session already shows we're at max — skip download.
+      // The transaction below re-checks with a fresh DB read as the authoritative guard.
       await wa.sendText(
         phoneNumber,
         lang === 'hi'
@@ -124,25 +125,54 @@ export async function handleAwaitingPhoto(
       return;
     }
 
-    // Append to session
-    const newUrls = [...session.imageStorageUrls, storageUrl];
-    const newMediaIds = [...session.imageMediaIds, message.mediaId];
-
     // If image has a caption, use it as instructions (overrides any prior instructions)
     const rawCaption = message.caption?.trim();
-    const instructions = rawCaption || session.voiceInstructions || null;
-    void instructions; // used indirectly via session update below
 
-    await prisma.session.update({
-      where: { phoneNumber },
-      data: {
-        imageStorageUrls: newUrls,
-        imageMediaIds: newMediaIds,
-        ...(rawCaption ? { voiceInstructions: rawCaption.slice(0, 500) } : {}),
-      },
+    // Capture both values as definite strings before entering the async transaction
+    // callback — TypeScript cannot narrow `let` variables or optional fields across
+    // closure boundaries.
+    const uploadedUrl: string = storageUrl;
+    const mediaId: string = message.mediaId as string;
+
+    // Atomically append to imageStorageUrls and imageMediaIds using a transaction
+    // with a fresh read. Without this, concurrent photo bursts each read the same
+    // stale array and only the last write survives.
+    const updated = await prisma.$transaction(async (tx) => {
+      const fresh = await tx.session.findUnique({
+        where: { phoneNumber },
+        select: { imageStorageUrls: true, imageMediaIds: true },
+      });
+
+      const currentUrls = (fresh?.imageStorageUrls as string[]) ?? [];
+      const currentIds = (fresh?.imageMediaIds as string[]) ?? [];
+
+      // Re-check limit inside the transaction with the freshest count.
+      if (currentUrls.length >= MAX_IMAGES_PER_ORDER) {
+        return null; // Already at max — caller handles this
+      }
+
+      return tx.session.update({
+        where: { phoneNumber },
+        data: {
+          imageStorageUrls: [...currentUrls, uploadedUrl],
+          imageMediaIds: [...currentIds, mediaId],
+          ...(rawCaption ? { voiceInstructions: rawCaption.slice(0, 500) } : {}),
+        },
+      });
     });
 
-    const newCount = newUrls.length;
+    if (!updated) {
+      // Another concurrent write already pushed us to the max — inform the user.
+      await wa.sendText(
+        phoneNumber,
+        lang === 'hi'
+          ? `Maximum ${MAX_IMAGES_PER_ORDER} photos ho gayi. Processing shuru kar raha hun!`
+          : `Maximum ${MAX_IMAGES_PER_ORDER} photos reached. Starting processing!`,
+      );
+      return;
+    }
+
+    const newCount = (updated.imageStorageUrls as string[]).length;
 
     // Acknowledge
     await wa.sendText(phoneNumber, msgPhotoReceived(lang, newCount));
@@ -166,7 +196,11 @@ export async function handleAwaitingPhoto(
     // Check if we're in instructions phase (earlyPhotoMediaId used as flag: 'awaiting_instructions')
     if (session.earlyPhotoMediaId === 'awaiting_instructions') {
       try {
-        const accessToken = process.env.WHATSAPP_ACCESS_TOKEN!;
+        const accessToken = process.env.WHATSAPP_ACCESS_TOKEN ?? process.env['WHATSAPP_ACCESS_TOKEN'] ?? '';
+        if (!accessToken) {
+          console.error(JSON.stringify({ event: 'missing_whatsapp_access_token' }));
+          throw new Error('WHATSAPP_ACCESS_TOKEN is not configured');
+        }
         const { downloadMedia } = await import('@whatsads/whatsapp');
         const { buffer, mimeType } = await downloadMedia(message.mediaId, accessToken);
         const { uploadFile: upload, Buckets: B } = await import('@whatsads/storage');

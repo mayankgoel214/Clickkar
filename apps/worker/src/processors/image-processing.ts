@@ -30,7 +30,13 @@ export async function processImageJob(job: Job): Promise<void> {
   await prisma.imageJob.update({
     where: { id: data.imageJobId },
     data: { status: 'processing', startedAt: new Date(), attempts: { increment: 1 } },
-  }).catch(() => {}); // Job record might not exist for edits
+  }).catch((err) => {
+    console.error(JSON.stringify({
+      event: 'db_update_failed',
+      error: err instanceof Error ? err.message : String(err),
+      context: 'imageJob_mark_processing',
+    }));
+  }); // Job record might not exist for edits
 
   try {
     // Use never-fail pipeline — always returns a result
@@ -128,7 +134,13 @@ export async function processImageJob(job: Job): Promise<void> {
         durationMs: result.durationMs,
         completedAt: new Date(),
       },
-    }).catch(() => {});
+    }).catch((err) => {
+      console.error(JSON.stringify({
+        event: 'db_update_failed',
+        error: err instanceof Error ? err.message : String(err),
+        context: 'imageJob_mark_completed',
+      }));
+    });
 
     // Update order — add output URL
     const order = await prisma.order.findUnique({ where: { id: data.orderId } });
@@ -191,10 +203,12 @@ export async function processImageJob(job: Job): Promise<void> {
           videoUrl ? [videoUrl] : [],
         );
 
-        // Transition session to DELIVERED from either PROCESSING or EDIT_PROCESSING
+        // Transition session to DELIVERED from PROCESSING, EDIT_PROCESSING, or IDLE
+        // (IDLE is included because the user may have escaped PROCESSING via escape intent
+        // while the worker was still running — we still need to show feedback buttons)
         if (user) {
           const sessionUpdate = await prisma.session.updateMany({
-            where: { userId: user.id, state: { in: ['PROCESSING', 'EDIT_PROCESSING'] } },
+            where: { userId: user.id, state: { in: ['PROCESSING', 'EDIT_PROCESSING', 'IDLE'] } },
             data: { state: 'DELIVERED', stateEnteredAt: new Date() },
           });
           if (sessionUpdate.count > 0) {
@@ -221,7 +235,13 @@ export async function processImageJob(job: Job): Promise<void> {
         errorMessage: err instanceof Error ? err.message : String(err),
         completedAt: new Date(),
       },
-    }).catch(() => {});
+    }).catch((dbErr) => {
+      console.error(JSON.stringify({
+        event: 'db_update_failed',
+        error: dbErr instanceof Error ? dbErr.message : String(dbErr),
+        context: 'imageJob_mark_failed',
+      }));
+    });
 
     // If all retries exhausted, notify user
     const jobRecord = await prisma.imageJob.findUnique({
@@ -277,7 +297,13 @@ export async function processImageJob(job: Job): Promise<void> {
         await prisma.order.update({
           where: { id: data.orderId },
           data: { status: completedUrls.length > 0 ? 'completed' : 'failed', processingCompletedAt: new Date() },
-        }).catch(() => {});
+        }).catch((dbErr) => {
+          console.error(JSON.stringify({
+            event: 'db_update_failed',
+            error: dbErr instanceof Error ? dbErr.message : String(dbErr),
+            context: 'order_mark_failed',
+          }));
+        });
       }
     }
 

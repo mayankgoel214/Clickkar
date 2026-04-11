@@ -201,13 +201,14 @@ export async function handleDelivered(
     return;
   }
 
-  // New photo → start a new order
+  // New photo → start a new order, preserving the user's last style so they
+  // don't silently default back to Clean White
   if (message.messageType === 'image') {
     await transitionTo(session.phoneNumber, 'AWAITING_PHOTO', {
       imageMediaIds: [],
       imageStorageUrls: [],
       currentOrderId: null,
-      styleSelection: null,
+      styleSelection: user.lastStyleUsed ?? session.styleSelection ?? null,
       voiceInstructions: null,
     });
     const { handleAwaitingPhoto } = await import('./images.js');

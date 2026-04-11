@@ -128,10 +128,12 @@ export async function handleIncomingMessage(
 
       case 'PROCESSING': {
         // Escape hatch — user wants to start fresh
+        // NOTE: Do NOT clear currentOrderId — the worker is still running and needs it
+        // to deliver results. The worker accepts IDLE as a valid source state for the
+        // DELIVERED transition, so feedback buttons will still be shown when done.
         if (isEscapeIntent(message)) {
-          logger.info('Escape intent in PROCESSING — resetting to IDLE', { phoneNumber });
+          logger.info('Escape intent in PROCESSING — resetting to IDLE (keeping currentOrderId)', { phoneNumber });
           await transitionTo(phoneNumber, 'IDLE', {
-            currentOrderId: null,
             imageMediaIds: [],
             imageStorageUrls: [],
           });

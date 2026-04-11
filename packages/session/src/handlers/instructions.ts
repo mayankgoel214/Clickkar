@@ -7,11 +7,10 @@ import type { WhatsAppClient } from '@whatsads/whatsapp';
 import { downloadMedia } from '@whatsads/whatsapp';
 import type { Session, User } from '@whatsads/db';
 import { prisma } from '@whatsads/db';
-import { getImageQueue } from '@whatsads/queue';
 import { transitionTo } from '../db-helpers.js';
 import { msgPhotoReceivedWithPayment, msgProcessingStarted, styleDisplayName } from '../messages.js';
 import { PRICE_PER_IMAGE_PAISE, ButtonIds } from '../types.js';
-import { sendPaymentLink } from './payment.js';
+import { sendPaymentLink, enqueueImageJobs } from './payment.js';
 import { logger } from '../logger.js';
 
 // ---------------------------------------------------------------------------
@@ -19,7 +18,11 @@ import { logger } from '../logger.js';
 // ---------------------------------------------------------------------------
 
 export async function downloadWhatsAppMedia(mediaId: string): Promise<{ buffer: Buffer; mimeType: string }> {
-  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN!;
+  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN ?? process.env['WHATSAPP_ACCESS_TOKEN'] ?? '';
+  if (!accessToken) {
+    console.error(JSON.stringify({ event: 'missing_whatsapp_access_token' }));
+    throw new Error('WHATSAPP_ACCESS_TOKEN is not configured');
+  }
   return downloadMedia(mediaId, accessToken);
 }
 
@@ -88,8 +91,10 @@ export async function createOrderAndSendPayment(params: CreateOrderParams): Prom
     const processingMsg = msgProcessingStarted(lang);
     await wa.sendText(phoneNumber, `${confirmationMsg}\n\n${processingMsg}`);
 
-    // Enqueue image jobs (order already in 'processing' state)
-    await enqueueImageJobs(order.id, phoneNumber, imageStorageUrls, styleId, voiceInstructions, user.businessType ?? undefined);
+    // Enqueue image jobs using the canonical enqueueImageJobs from payment.ts.
+    // Order status is already set to 'processing' above; the canonical function
+    // will perform an idempotent update back to 'processing', which is harmless.
+    await enqueueImageJobs(order.id, phoneNumber, order);
   } else {
     // Paid order — send confirmation, then create payment link
     await wa.sendText(phoneNumber, confirmationMsg);
@@ -103,41 +108,3 @@ export async function createOrderAndSendPayment(params: CreateOrderParams): Prom
   }
 }
 
-// ---------------------------------------------------------------------------
-// Enqueue image processing jobs
-// ---------------------------------------------------------------------------
-
-async function enqueueImageJobs(
-  orderId: string,
-  phoneNumber: string,
-  inputImageUrls: string[],
-  style: string,
-  voiceInstructions: string | null,
-  productCategory?: string,
-): Promise<void> {
-  const queue = getImageQueue();
-
-  for (const inputImageUrl of inputImageUrls) {
-    const imageJob = await prisma.imageJob.create({
-      data: {
-        orderId,
-        inputImageUrl,
-        style,
-        status: 'queued',
-      },
-    });
-
-    await queue.add('process_image', {
-      orderId,
-      imageJobId: imageJob.id,
-      phoneNumber,
-      inputImageUrl,
-      style,
-      voiceInstructions: voiceInstructions ?? undefined,
-      productCategory,
-      pipeline: 'primary',
-    });
-
-    logger.info('Enqueued image job', { orderId, imageJobId: imageJob.id, phoneNumber });
-  }
-}

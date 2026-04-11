@@ -175,8 +175,10 @@ export async function handleSetupLanguage(
   if (message.messageType === 'interactive' && message.buttonReplyId) {
     lang = message.buttonReplyId === ButtonIds.LANG_HINDI ? 'hi' : 'en';
   } else if (message.messageType === 'text' && message.text) {
-    const t = message.text.trim().toLowerCase();
-    lang = (t === 'hindi' || t.startsWith('hindi') || t === '1') ? 'hi' : 'en';
+    const text = message.text.toLowerCase().trim() ?? '';
+    const isHindi = text === 'hindi' || text === '1' || text === 'हिंदी' || text === 'हिन्दी' ||
+                    text.includes('hindi') || text.includes('हिं');
+    lang = isHindi ? 'hi' : 'en';
   }
 
   await updateUser(session.phoneNumber, { language: lang });

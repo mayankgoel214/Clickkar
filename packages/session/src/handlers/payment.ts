@@ -81,9 +81,25 @@ export async function onPaymentConfirmed(
   razorpayPaymentId: string,
   wa: WhatsAppClient,
 ): Promise<void> {
+  // Idempotency guard — optimistic lock via updateMany so only one concurrent
+  // caller (Razorpay webhook or payment-check poller) proceeds. The second
+  // caller will see count === 0 and bail out safely.
+  const guard = await prisma.order.updateMany({
+    where: {
+      id: orderId,
+      status: { in: ['payment_pending', 'created'] },
+    },
+    data: { status: 'payment_confirmed', razorpayPaymentId },
+  });
+
+  if (guard.count === 0) {
+    logger.info(JSON.stringify({ event: 'payment_already_confirmed', orderId }));
+    return;
+  }
+
   const order = await prisma.order.findUnique({ where: { id: orderId } });
   if (!order) {
-    logger.error('onPaymentConfirmed: order not found', { orderId });
+    logger.error('onPaymentConfirmed: order not found after guard update', { orderId });
     return;
   }
 
@@ -97,16 +113,12 @@ export async function onPaymentConfirmed(
   const lang = (user.language === 'en' ? 'en' : 'hi') as 'hi' | 'en';
 
   try {
-    await prisma.$transaction([
-      prisma.order.update({
-        where: { id: orderId },
-        data: { status: 'payment_confirmed', razorpayPaymentId },
-      }),
-      prisma.session.update({
-        where: { phoneNumber },
-        data: { state: 'PROCESSING', stateEnteredAt: new Date() },
-      }),
-    ]);
+    // Status already set to payment_confirmed by the idempotency guard above.
+    // Transition session state to PROCESSING.
+    await prisma.session.update({
+      where: { phoneNumber },
+      data: { state: 'PROCESSING', stateEnteredAt: new Date() },
+    });
 
     await wa.sendText(phoneNumber, msgPaymentConfirmed(lang));
     await wa.sendText(phoneNumber, msgProcessingStarted(lang));
@@ -210,8 +222,12 @@ export async function sendPaymentLink(
     return;
   }
 
-  // Reuse existing link if already created
-  if (order.razorpayPaymentLinkUrl) {
+  // Check if existing link might be expired (created more than 25 minutes ago)
+  const linkAge = order.createdAt ? Date.now() - new Date(order.createdAt).getTime() : Infinity;
+  const LINK_EXPIRY_BUFFER = 25 * 60 * 1000; // 25 minutes (links expire at 30)
+
+  if (order.razorpayPaymentLinkUrl && linkAge < LINK_EXPIRY_BUFFER) {
+    // Reuse existing link
     await wa.sendPaymentLink(
       phoneNumber,
       lang === 'hi'
@@ -222,6 +238,8 @@ export async function sendPaymentLink(
     );
     return;
   }
+
+  // Create new link (existing link expired or doesn't exist)
 
   // DEV MODE: skip payment and auto-confirm
   if (process.env.PAYMENT_BYPASS === 'true') {

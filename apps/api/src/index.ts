@@ -4,6 +4,7 @@ loadEnv({ path: resolve(import.meta.dirname, '../../../.env'), override: true })
 
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import { prisma } from '@whatsads/db';
 import { getConfig } from './config.js';
 import { registerRawBodyParser } from './middleware/raw-body.js';
 import { healthRoutes } from './routes/health.js';
@@ -56,6 +57,7 @@ async function main() {
     process.on(signal, async () => {
       app.log.info({ signal }, 'Shutting down...');
       await app.close();
+      await prisma.$disconnect();
       process.exit(0);
     });
   }
