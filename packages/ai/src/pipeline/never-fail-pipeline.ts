@@ -77,12 +77,19 @@ export async function processImageNeverFail(
       ]);
       clearTimeout(tier1Timer!);
 
-      // Generate 9:16 story format from the square output (non-fatal)
-      let storyUrl: string | undefined;
-      try {
-        const outputBuffer = await downloadBuffer(result.outputUrl);
-        storyUrl = await tryGenerateStory(outputBuffer, style);
-      } catch { /* story is optional */ }
+      // Use storyUrl from V3 pipeline (already generated in parallel)
+      // Fall back to generating from outputBuffer if V3 didn't produce one
+      let storyUrl = result.storyUrl;
+      if (!storyUrl) {
+        try {
+          if (result.outputBuffer) {
+            storyUrl = await tryGenerateStory(result.outputBuffer, style);
+          } else {
+            const outputBuffer = await downloadBuffer(result.outputUrl);
+            storyUrl = await tryGenerateStory(outputBuffer, style);
+          }
+        } catch { /* story is optional */ }
+      }
 
       console.info(JSON.stringify({ event: 'never_fail_tier1_success', qaScore: result.qaScore, hasStory: !!storyUrl, durationMs: Date.now() - totalStart }));
       return { ...result, storyUrl, tier: 1 };

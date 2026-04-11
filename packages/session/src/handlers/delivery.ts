@@ -50,13 +50,13 @@ export async function sendProcessedImages(
 
     // 5-second gap between batch images for a "wow" moment
     if (i < outputImageUrls.length - 1) {
-      await sleep(5000);
+      await sleep(1500);
     }
   }
 
   // Send video ads BEFORE feedback buttons
   if (videoUrls && videoUrls.length > 0) {
-    await sleep(2000);
+    await sleep(1000);
     for (const vUrl of videoUrls) {
       const videoCaption = language === 'hi'
         ? 'Bonus: Aapka product video ad!'
@@ -67,7 +67,7 @@ export async function sendProcessedImages(
 
   // Send 9:16 story format images
   if (storyUrls && storyUrls.length > 0) {
-    await sleep(2000);
+    await sleep(1000);
     for (const sUrl of storyUrls) {
       const storyCaption = language === 'hi'
         ? 'Story format (9:16) — Instagram Stories & WhatsApp Status ke liye!'
@@ -76,7 +76,7 @@ export async function sendProcessedImages(
     }
   }
 
-  await sleep(2000);
+  await sleep(1000);
   await wa.sendButtons(phoneNumber, msgAskFeedback(language), [
     { id: ButtonIds.FEEDBACK_GREAT, title: language === 'hi' ? 'Bahut badiya!' : 'Love it!' },
     { id: ButtonIds.FEEDBACK_CHANGE, title: language === 'hi' ? 'Kuch badlao' : 'Make a change' },

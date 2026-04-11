@@ -2,7 +2,7 @@ import { preprocessImage } from './preprocess.js';
 import { analyzeAndPlanV3, type AnalyzeAndPlanV3Result } from './product-analyzer-v3.js';
 import { geminiGenerateImage, geminiEditImage } from './gemini-generate.js';
 import { verifyAndFixBranding } from './gemini-branding-fix.js';
-import { postProcessFinal, addAILabel, uploadToStorage, downloadBuffer, createStudioShot } from './fallback.js';
+import { postProcessFinal, addAILabel, uploadToStorage, downloadBuffer, createStudioShot, generateStoryFormat } from './fallback.js';
 import { createStyledStudioShot } from './styled-studio.js';
 import { combinedQualityCheck } from '../qa/combined-qa.js';
 import { runDeterministicChecks } from '../qa/deterministic-checks.js';
@@ -592,40 +592,37 @@ Make ONLY this fix. Do not change the overall scene, composition, dynamic elemen
   }
 
   // -------------------------------------------------------------------------
-  // Stage 7: Upload
+  // Stage 7+8: Upload + Video + Story in parallel
   // -------------------------------------------------------------------------
 
-  let outputUrl: string;
-  try {
-    outputUrl = await uploadToStorage(adBuffer, `output_${Date.now()}.jpg`);
-  } catch (uploadErr) {
-    console.error(JSON.stringify({ event: 'v3_upload_failed_retry', error: uploadErr instanceof Error ? uploadErr.message : String(uploadErr) }));
-    // Retry once after 2 seconds
-    await new Promise(r => setTimeout(r, 2000));
-    outputUrl = await uploadToStorage(adBuffer, `output_${Date.now()}.jpg`);
-  }
-
-  // -------------------------------------------------------------------------
-  // Stage 8: Ken Burns Video (free, non-blocking)
-  // -------------------------------------------------------------------------
-
-  let videoUrl: string | undefined;
-  try {
-    const videoResult = await generateKenBurnsVideo(adBuffer, {
+  const [outputUrl, videoResult, storyResult] = await Promise.all([
+    uploadToStorage(adBuffer, `output_${Date.now()}.jpg`).catch(async (uploadErr) => {
+      console.error(JSON.stringify({ event: 'v3_upload_failed_retry', error: uploadErr instanceof Error ? uploadErr.message : String(uploadErr) }));
+      await new Promise(r => setTimeout(r, 2000));
+      return uploadToStorage(adBuffer!, `output_${Date.now()}.jpg`);
+    }),
+    generateKenBurnsVideo(adBuffer, {
       productCategory: validPlan.productCategory,
       durationSec: 5,
-    });
-    videoUrl = await uploadToStorage(videoResult.videoBuffer, `video_${Date.now()}.mp4`, 'video/mp4');
-    console.info(JSON.stringify({
-      event: 'v3_video_complete',
-      effect: videoResult.effect,
-      durationMs: videoResult.durationMs,
-    }));
-  } catch (err) {
-    console.warn(JSON.stringify({
-      event: 'v3_video_failed',
-      error: err instanceof Error ? err.message : String(err),
-    }));
+    }).catch(err => {
+      console.warn(JSON.stringify({ event: 'v3_video_failed', error: err instanceof Error ? err.message : String(err) }));
+      return null;
+    }),
+    generateStoryFormat(adBuffer, params.style)
+      .then(buf => uploadToStorage(buf, `story_${Date.now()}.jpg`))
+      .catch(() => undefined as string | undefined),
+  ]);
+
+  let videoUrl: string | undefined;
+  if (videoResult) {
+    try {
+      videoUrl = await uploadToStorage(videoResult.videoBuffer, `video_${Date.now()}.mp4`, 'video/mp4');
+      console.info(JSON.stringify({
+        event: 'v3_video_complete',
+        effect: videoResult.effect,
+        durationMs: videoResult.durationMs,
+      }));
+    } catch { /* video upload optional */ }
   }
 
   console.info(JSON.stringify({
@@ -641,6 +638,8 @@ Make ONLY this fix. Do not change the overall scene, composition, dynamic elemen
 
   return {
     outputUrl,
+    outputBuffer: adBuffer ?? undefined,
+    storyUrl: storyResult,
     videoUrl,
     cutoutUrl: undefined,
     qaScore: usedFallback ? 45 : (qaResult?.score ?? 50),
@@ -654,7 +653,7 @@ Make ONLY this fix. Do not change the overall scene, composition, dynamic elemen
 }
 
 // ---------------------------------------------------------------------------
-// V3 Candidate Selector — evaluates EMOTIONAL IMPACT, not just photorealism
+// V3 Candidate Selector — deterministic metrics, no LLM call (~0.2s)
 // ---------------------------------------------------------------------------
 
 async function selectBestCandidate(
@@ -663,62 +662,52 @@ async function selectBestCandidate(
 ): Promise<Buffer> {
   if (candidates.length === 1) return candidates[0]!;
 
-  const { GoogleGenAI } = await import('@google/genai');
-  const genAI = new GoogleGenAI({
-    apiKey: process.env['GOOGLE_AI_API_KEY'] ?? process.env['GOOGLE_GENAI_API_KEY'] ?? '',
-  });
+  // Run deterministic checks on all candidates in parallel (~0.2s total)
+  const checks = await Promise.all(
+    candidates.map(c => runDeterministicChecks(inputBuffer, c))
+  );
 
-  function detectMime(buf: Buffer): string {
-    if (buf[0] === 0x89 && buf[1] === 0x50) return 'image/png';
-    if (buf[0] === 0x52 && buf[1] === 0x49) return 'image/webp';
-    return 'image/jpeg';
+  // Score each candidate: prefer higher fill, lower symmetry (no duplication),
+  // pass status, and lower NCC with input (more scene change = more creative)
+  let bestIdx = 0;
+  let bestScore = -Infinity;
+
+  for (let i = 0; i < candidates.length; i++) {
+    const check = checks[i]!;
+    let score = 0;
+
+    // Pass is worth the most
+    if (check.pass) score += 100;
+
+    // Higher fill is better (product visible)
+    score += (check.estimatedFillPct ?? 0);
+
+    // Lower quadrant symmetry is better (no duplication)
+    score -= (check.quadrantSymmetry ?? 0) * 50;
+
+    // Some scene change from input is good (not identical to input)
+    if (check.sceneNCC < 0.8) score += 20;
+
+    // Not blurry
+    if (!check.failReason?.includes('blurry')) score += 10;
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestIdx = i;
+    }
   }
 
-  try {
-    const inputMime = detectMime(inputBuffer);
-    const inputBase64 = inputBuffer.toString('base64');
+  console.info(JSON.stringify({
+    event: 'v3_deterministic_selector',
+    winner: bestIdx,
+    totalCandidates: candidates.length,
+    scores: checks.map((c, i) => ({
+      idx: i,
+      pass: c.pass,
+      fill: c.estimatedFillPct,
+      ncc: Math.round(c.sceneNCC * 1000) / 1000,
+    })),
+  }));
 
-    const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [
-      { text: `Pick the BEST product ad photo. Image 1 is the original product.
-
-Evaluate each candidate on 3 criteria ONLY (in priority order):
-1. PRODUCT ACCURACY — Does the product match the original exactly? Wrong shape, missing parts, or altered details = instant elimination.
-2. VISUAL IMPACT — Which would make someone stop scrolling on Instagram? Lighting drama, composition, beauty.
-3. PHOTOREALISM — Which looks most like a real professional photograph?
-
-Reply with ONLY the letter: ${candidates.map((_, i) => String.fromCharCode(65 + i)).join(', ')}.` },
-      { inlineData: { mimeType: inputMime, data: inputBase64 } },
-    ];
-
-    candidates.forEach((buf, i) => {
-      const label = String.fromCharCode(65 + i);
-      parts.push({ text: `Candidate ${label}:` });
-      parts.push({ inlineData: { mimeType: detectMime(buf), data: buf.toString('base64') } });
-    });
-
-    const response = await Promise.race([
-      genAI.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: [{ role: 'user', parts }],
-      }),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('selector timed out')), 15_000)
-      ),
-    ]);
-
-    const pick = response.candidates?.[0]?.content?.parts?.[0]?.text?.trim().toUpperCase() ?? 'A';
-    const idx = pick.charCodeAt(0) - 65;
-    const winner = idx >= 0 && idx < candidates.length ? idx : 0;
-
-    console.info(JSON.stringify({
-      event: 'v3_selector_complete',
-      winner: String.fromCharCode(65 + winner),
-      totalCandidates: candidates.length,
-    }));
-
-    return candidates[winner]!;
-  } catch (err) {
-    console.warn(JSON.stringify({ event: 'v3_selector_failed', error: String(err) }));
-    return candidates[0]!;
-  }
+  return candidates[bestIdx]!;
 }
