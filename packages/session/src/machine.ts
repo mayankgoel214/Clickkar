@@ -75,6 +75,16 @@ export async function handleIncomingMessage(
     messageType: message.messageType,
   });
 
+  // 5a. Help intent — intercept before state routing
+  if (isHelpIntent(message.text)) {
+    const lang = user.language === 'en' ? 'en' : 'hi';
+    const helpText = lang === 'hi'
+      ? `🙏 *Clickkar Help*\n\n📸 Product photo bhejein → AI professional ad banayega\n\n*Commands:*\n• "hi" — Naya order shuru karein\n• Photo bhejein — Ad banaye\n• Voice note — Instructions dein\n\n*Current status:* ${session.state === 'IDLE' ? 'Ready! Photo bhejein.' : session.state === 'PROCESSING' ? 'Aapka photo process ho raha hai...' : session.state === 'DELIVERED' ? 'Photo deliver ho gaya. Edit karein ya naya bhejein.' : 'Setup chal raha hai.'}`
+      : `🙏 *Clickkar Help*\n\n📸 Send a product photo → AI creates a professional ad\n\n*Commands:*\n• "hi" — Start a new order\n• Send a photo — Create an ad\n• Voice note — Give instructions\n\n*Current status:* ${session.state === 'IDLE' ? 'Ready! Send a photo.' : session.state === 'PROCESSING' ? 'Your photo is being processed...' : session.state === 'DELIVERED' ? 'Photo delivered. Edit or send a new one.' : 'Setting up your preferences.'}`;
+    await wa.sendText(phoneNumber, helpText);
+    return;
+  }
+
   // 5. Route based on current state
   try {
     switch (session.state) {
@@ -223,6 +233,16 @@ export async function handleIncomingMessage(
       logger.error('Failed to send error message', { phoneNumber });
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Help intent detection
+// ---------------------------------------------------------------------------
+
+function isHelpIntent(text: string | undefined): boolean {
+  if (!text) return false;
+  const t = text.trim().toLowerCase();
+  return /^(help|madad|sahayata|menu|\?|kaise|how)$/i.test(t);
 }
 
 // ---------------------------------------------------------------------------

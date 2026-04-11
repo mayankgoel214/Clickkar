@@ -154,15 +154,25 @@ export async function whatsappWebhookRoutes(app: FastifyInstance): Promise<void>
       const phoneNumber = message.from;
       const rawType = getMessageType(message);
 
+      // Create WhatsApp client early so we can reply for unsupported message types
+      const wa = new WhatsAppClient({
+        accessToken: config.WHATSAPP_ACCESS_TOKEN,
+        phoneNumberId: config.WHATSAPP_PHONE_NUMBER_ID,
+      });
+
       // Map to session-expected types
       const validTypes = ['text', 'image', 'audio', 'interactive', 'unknown'] as const;
       const messageType = validTypes.includes(rawType as any)
         ? (rawType as typeof validTypes[number])
         : 'unknown';
 
-      // Skip unsupported message types (reactions, stickers, system messages, etc.)
+      // Unsupported message types (reactions, stickers, system messages, etc.) — tell the user
       if (!messageType || messageType === 'unknown') {
         app.log.debug('Ignoring unsupported message type: %s', rawType);
+        // Don't leave the user hanging — tell them what we accept
+        try {
+          await wa.sendText(phoneNumber, '📸 I can only process photos and text messages. Please send a product photo to get started!');
+        } catch { /* best effort */ }
         return;
       }
 
@@ -191,12 +201,6 @@ export async function whatsappWebhookRoutes(app: FastifyInstance): Promise<void>
             ? msg.interactive.list_reply?.id
             : undefined,
       };
-
-      // Create WhatsApp client
-      const wa = new WhatsAppClient({
-        accessToken: config.WHATSAPP_ACCESS_TOKEN,
-        phoneNumberId: config.WHATSAPP_PHONE_NUMBER_ID,
-      });
 
       // Mark as read
       wa.markAsRead(message.id).catch(() => {});

@@ -113,11 +113,18 @@ export async function processImageJob(job: Job): Promise<void> {
     const PIPELINE_ENUM_MAP: Record<string, string> = {
       composite: 'composite',
       bria: 'bria',
+      'bria-fallback': 'bria',
       kontext: 'kontext',
       segmentation: 'segmentation',
       nano_banana: 'nano_banana',
       primary: 'primary',
       fallback: 'fallback',
+      'styled-studio': 'fallback',
+      'styled-studio-fallback': 'fallback',
+      'clean-studio': 'fallback',
+      'enhanced-original': 'fallback',
+      'raw-input': 'fallback',
+      'tier4-enhanced': 'fallback',
     };
     const pipelineEnum = (PIPELINE_ENUM_MAP[result.pipeline] ?? 'fallback') as any;
 

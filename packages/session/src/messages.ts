@@ -11,9 +11,9 @@ type Lang = 'hi' | 'en';
 
 export function msgWelcomeAndAskName(lang: Lang): string {
   if (lang === 'hi') {
-    return 'Namaste! Clickkar mein swagat hai.\nAapke product ki photo professional bana denge — Rs 99, 60 second mein.\nPehli baar bilkul free!\n\nAapka naam bataiye?';
+    return 'Namaste! Clickkar mein swagat hai.\nAapke product ki photo professional bana denge — Rs 99, 1-2 minute mein.\nPehli baar bilkul free!\n\nAapka naam bataiye?';
   }
-  return 'Welcome to Clickkar!\nWe make your product photos professional — Rs 99, 60 seconds.\nFirst one is completely free!\n\nWhat\'s your name?';
+  return 'Welcome to Clickkar!\nWe make your product photos professional — Rs 99, under 2 minutes.\nFirst one is completely free!\n\nWhat\'s your name?';
 }
 
 export function msgGreetAndAskCategory(lang: Lang, name: string): string {
@@ -223,9 +223,9 @@ export function msgEditProcessing(lang: Lang): string {
 
 export function msgRevisionLimitReached(lang: Lang): string {
   if (lang === 'hi') {
-    return 'Free revision use ho gayi. Rs 29 mein yeh badlav hoga?';
+    return '2 free edits ho chuke hain is order ke liye. ✨\n\nNaya photo bhejne ke liye "hi" bhejein!';
   }
-  return 'Free revisions used up. This change costs Rs 29.';
+  return 'You\'ve used your 2 free edits for this order. ✨\n\nSend "hi" to start a new photo!';
 }
 
 // ---------------------------------------------------------------------------
