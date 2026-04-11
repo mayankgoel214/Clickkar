@@ -593,14 +593,12 @@ Make ONLY this fix. Do not change the overall scene, composition, dynamic elemen
 
     try {
       adBuffer = await createStyledStudioShot(rawBuffer, params.imageUrl, params.style ?? 'style_lifestyle', validPlan.productCategory);
-      adBuffer = await addAdOverlay(adBuffer, { productName: validPlan.analysis?.productName, brandName: validPlan.analysis?.brandName ?? undefined, style: params.style });
       adBuffer = await addAILabel(adBuffer);
     } catch (styledErr) {
       console.warn(JSON.stringify({ event: 'v3_styled_fallback_failed', error: styledErr instanceof Error ? styledErr.message : String(styledErr) }));
       try {
         const studio = await createStudioShot(params.imageUrl, validPlan.productCategory, validPlan.recommendedCanvasFill);
         adBuffer = await postProcessFinal(studio.studioBuffer, params.style);
-        adBuffer = await addAdOverlay(adBuffer, { productName: validPlan.analysis?.productName, brandName: validPlan.analysis?.brandName ?? undefined, style: params.style });
         adBuffer = await addAILabel(adBuffer);
       } catch (studioErr) {
         console.error(JSON.stringify({ event: 'v3_all_fallbacks_failed', error: studioErr instanceof Error ? studioErr.message : String(studioErr) }));
