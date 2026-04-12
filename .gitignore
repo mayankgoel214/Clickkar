@@ -9,6 +9,7 @@ package-lock.json
 
 # Claude Code
 .claude/
+CLAUDE.md
 
 # OS files
 .DS_Store
