@@ -227,11 +227,15 @@ export async function handleAwaitingPhoto(
       return;
     }
 
-    // At max: advance immediately
+    // At max: show buttons (same as debounce) so user can add instructions
     if (newCount >= MAX_IMAGES_PER_ORDER) {
-      const freshSession = await prisma.session.findUnique({ where: { phoneNumber } });
-      if (freshSession) {
-        await advanceToPayment(freshSession, user, wa, lang);
+      // Use atomic guard to ensure only one handler shows buttons
+      const claimed = await prisma.session.updateMany({
+        where: { phoneNumber, earlyPhotoMediaId: null },
+        data: { earlyPhotoMediaId: 'awaiting_action' },
+      });
+      if (claimed.count > 0) {
+        await showPhotoButtons(phoneNumber, Math.min(newCount, MAX_IMAGES_PER_ORDER), lang, wa);
       }
       return;
     }
@@ -521,22 +525,63 @@ async function advanceToPayment(
 
   const fresh = await prisma.session.findUnique({ where: { phoneNumber } });
   if (!fresh || (fresh.imageStorageUrls as string[]).length === 0) {
+    console.warn(JSON.stringify({ event: 'advance_to_payment_no_images', phoneNumber }));
+    // Reset the flag so session can recover
+    await prisma.session.update({ where: { phoneNumber }, data: { earlyPhotoMediaId: null } });
     return;
   }
 
   const styleId = fresh.styleSelection ?? 'style_clean_white';
 
-  await createOrderAndSendPayment({
-    session: fresh,
-    user,
-    lang,
-    wa,
-    imageStorageUrls: fresh.imageStorageUrls,
-    imageMediaIds: fresh.imageMediaIds,
-    imageCount: fresh.imageStorageUrls.length,
-    styleId,
-    voiceInstructions: fresh.voiceInstructions,
-  });
+  try {
+    console.info(JSON.stringify({
+      event: 'advance_to_payment_start',
+      phoneNumber,
+      imageCount: fresh.imageStorageUrls.length,
+      style: styleId,
+      hasInstructions: !!fresh.voiceInstructions,
+    }));
+
+    await createOrderAndSendPayment({
+      session: fresh,
+      user,
+      lang,
+      wa,
+      imageStorageUrls: fresh.imageStorageUrls,
+      imageMediaIds: fresh.imageMediaIds,
+      imageCount: fresh.imageStorageUrls.length,
+      styleId,
+      voiceInstructions: fresh.voiceInstructions,
+    });
+
+    console.info(JSON.stringify({ event: 'advance_to_payment_complete', phoneNumber }));
+  } catch (err) {
+    console.error(JSON.stringify({
+      event: 'advance_to_payment_error',
+      phoneNumber,
+      error: err instanceof Error ? err.message : String(err),
+      stack: err instanceof Error ? err.stack?.slice(0, 500) : undefined,
+    }));
+
+    // Reset earlyPhotoMediaId so the session can recover
+    // (user can type "done" or tap buttons to retry)
+    await prisma.session.update({
+      where: { phoneNumber },
+      data: { earlyPhotoMediaId: 'awaiting_action' },
+    }).catch(() => {}); // don't throw on cleanup failure
+
+    // Try to notify the user
+    try {
+      await wa.sendText(
+        phoneNumber,
+        lang === 'hi'
+          ? 'Kuch problem aayi. Kripya "done" bolein ya dobara try karein.'
+          : 'Something went wrong. Please say "done" to try again.',
+      );
+    } catch {
+      // Can't even send error message — session will self-heal via debounce
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

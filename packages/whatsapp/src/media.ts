@@ -77,26 +77,32 @@ export async function downloadMedia(
   // Step 1: Resolve media ID → CDN URL
   let metaResponse: MediaMetadataResponse;
   try {
-    const metaRes = await fetch(
-      `https://graph.facebook.com/${apiVersion}/${mediaId}`,
-      { headers: { Authorization: authHeader }, signal: AbortSignal.timeout(10_000) }
-    );
-
-    if (!metaRes.ok) {
-      let body: unknown;
-      try {
-        body = await metaRes.json();
-      } catch {
-        body = await metaRes.text();
-      }
-      throw new WhatsAppMediaError(
-        `Failed to resolve media ID ${mediaId}: HTTP ${metaRes.status}`,
-        "resolve",
-        body
+    const metaCtrl = new AbortController();
+    const metaTimer = setTimeout(() => metaCtrl.abort(), 10_000);
+    try {
+      const metaRes = await fetch(
+        `https://graph.facebook.com/${apiVersion}/${mediaId}`,
+        { headers: { Authorization: authHeader }, signal: metaCtrl.signal }
       );
-    }
 
-    metaResponse = (await metaRes.json()) as MediaMetadataResponse;
+      if (!metaRes.ok) {
+        let body: unknown;
+        try {
+          body = await metaRes.json();
+        } catch {
+          body = await metaRes.text();
+        }
+        throw new WhatsAppMediaError(
+          `Failed to resolve media ID ${mediaId}: HTTP ${metaRes.status}`,
+          "resolve",
+          body
+        );
+      }
+
+      metaResponse = (await metaRes.json()) as MediaMetadataResponse;
+    } finally {
+      clearTimeout(metaTimer);
+    }
   } catch (error) {
     if (error instanceof WhatsAppMediaError) throw error;
     throw new WhatsAppMediaError(
@@ -120,21 +126,27 @@ export async function downloadMedia(
   // The CDN URL is signed and also requires the Bearer token.
   let buffer: Buffer;
   try {
-    const cdnRes = await fetch(cdnUrl, {
-      headers: { Authorization: authHeader },
-      signal: AbortSignal.timeout(30_000),
-    });
+    const cdnCtrl = new AbortController();
+    const cdnTimer = setTimeout(() => cdnCtrl.abort(), 30_000);
+    try {
+      const cdnRes = await fetch(cdnUrl, {
+        headers: { Authorization: authHeader },
+        signal: cdnCtrl.signal,
+      });
 
-    if (!cdnRes.ok) {
-      throw new WhatsAppMediaError(
-        `Failed to download media from CDN: HTTP ${cdnRes.status}`,
-        "download",
-        { cdnUrl, status: cdnRes.status }
-      );
+      if (!cdnRes.ok) {
+        throw new WhatsAppMediaError(
+          `Failed to download media from CDN: HTTP ${cdnRes.status}`,
+          "download",
+          { cdnUrl, status: cdnRes.status }
+        );
+      }
+
+      const arrayBuffer = await cdnRes.arrayBuffer();
+      buffer = Buffer.from(arrayBuffer);
+    } finally {
+      clearTimeout(cdnTimer);
     }
-
-    const arrayBuffer = await cdnRes.arrayBuffer();
-    buffer = Buffer.from(arrayBuffer);
   } catch (error) {
     if (error instanceof WhatsAppMediaError) throw error;
     throw new WhatsAppMediaError(

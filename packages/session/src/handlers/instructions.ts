@@ -18,12 +18,21 @@ import { logger } from '../logger.js';
 // ---------------------------------------------------------------------------
 
 export async function downloadWhatsAppMedia(mediaId: string): Promise<{ buffer: Buffer; mimeType: string }> {
-  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN ?? process.env['WHATSAPP_ACCESS_TOKEN'] ?? '';
-  if (!accessToken) {
+  const accessToken = process.env['WHATSAPP_ACCESS_TOKEN'] ?? '';
+  if (!accessToken || accessToken === 'placeholder') {
     console.error(JSON.stringify({ event: 'missing_whatsapp_access_token' }));
     throw new Error('WHATSAPP_ACCESS_TOKEN is not configured');
   }
-  return downloadMedia(mediaId, accessToken);
+
+  const DOWNLOAD_TIMEOUT_MS = 20_000;
+  const timeoutPromise = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error('Photo download timed out after 20s')), DOWNLOAD_TIMEOUT_MS)
+  );
+
+  return Promise.race([
+    downloadMedia(mediaId, accessToken),
+    timeoutPromise,
+  ]);
 }
 
 export function mimeToExt(mimeType: string): string {

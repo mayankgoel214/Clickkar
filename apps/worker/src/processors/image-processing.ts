@@ -310,7 +310,12 @@ export async function processImageJob(job: Job): Promise<void> {
       where: { id: data.imageJobId },
     });
 
-    if (jobRecord && jobRecord.attempts >= jobRecord.maxAttempts) {
+    // Check if BullMQ will NOT retry this job (final attempt)
+    const bullmqMaxAttempts = job.opts?.attempts ?? 3;
+    const isFinalBullMQAttempt = job.attemptsMade >= bullmqMaxAttempts;
+    const isMaxImageJobAttempts = jobRecord ? jobRecord.attempts >= jobRecord.maxAttempts : false;
+
+    if (isFinalBullMQAttempt || isMaxImageJobAttempts) {
       const user = await prisma.user.findUnique({
         where: { phoneNumber: data.phoneNumber },
       });
