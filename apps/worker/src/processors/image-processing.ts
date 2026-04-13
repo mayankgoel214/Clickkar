@@ -197,12 +197,21 @@ export async function processImageJob(job: Job): Promise<void> {
         const allVideoUrls = videoUrl ? [videoUrl] : [];
         const allStoryUrls = storyUrl ? [storyUrl] : [];
 
+        // Build style labels aligned to completedJobs (sorted by styleIndex for consistency)
+        const sortedCompletedJobs = [...completedJobs].sort(
+          (a: ImageJob, b: ImageJob) => (a.styleIndex ?? 0) - (b.styleIndex ?? 0),
+        );
+        const sortedCompletedUrls = sortedCompletedJobs.map((j: ImageJob) => j.outputImageUrl!);
+        const styleLabels = sortedCompletedJobs
+          .map((j: ImageJob) => j.style ?? null)
+          .filter((s): s is string => s !== null);
+
         // Optimistic lock: complete the order if it hasn't been completed yet
         const updated = await prisma.order.updateMany({
           where: { id: data.orderId, status: { in: ['processing', 'payment_confirmed'] } },
           data: {
             status: 'completed',
-            outputImageUrls: completedUrls,
+            outputImageUrls: sortedCompletedUrls,
             processingCompletedAt: new Date(),
           },
         });
@@ -236,6 +245,7 @@ export async function processImageJob(job: Job): Promise<void> {
               wa,
               videoUrl ? [videoUrl] : [],
               storyUrl ? [storyUrl] : [],
+              data.style ? [data.style] : undefined,
             );
             if (user) {
               await prisma.session.updateMany({
@@ -254,15 +264,16 @@ export async function processImageJob(job: Job): Promise<void> {
           phoneNumberId: config.WHATSAPP_PHONE_NUMBER_ID,
         });
 
-        // Deliver ALL completed outputs from every job in this order
+        // Deliver ALL completed outputs from every job in this order, with style labels
         await sendProcessedImages(
           data.phoneNumber,
-          completedUrls,
+          sortedCompletedUrls,
           (user?.language as 'hi' | 'en') || 'hi',
           user?.name ?? undefined,
           wa,
           allVideoUrls,
           allStoryUrls,
+          styleLabels.length > 0 ? styleLabels : undefined,
         );
 
         // Transition session to DELIVERED from PROCESSING, EDIT_PROCESSING, or IDLE

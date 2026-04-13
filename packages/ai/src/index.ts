@@ -63,6 +63,12 @@ export {
   type AnalyzeAndPlanResult,
 } from './pipeline/product-analyzer.js';
 
+// Multi-angle product analyzer (1-5 photos → unified ProductProfile)
+export {
+  analyzeMultiAngleProduct,
+  type MultiAngleProductProfile,
+} from './pipeline/multi-angle-analyzer.js';
+
 // ---------------------------------------------------------------------------
 // QA
 // ---------------------------------------------------------------------------

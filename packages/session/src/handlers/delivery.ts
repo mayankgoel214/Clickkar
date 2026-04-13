@@ -17,12 +17,30 @@ import { transitionTo } from '../db-helpers.js';
 import { handleAwaitingEdit } from './edit.js';
 import {
   msgImageDelivered,
+  msgStyleImageDelivered,
   msgAskFeedback,
   msgThankYou,
+  msgWhichAdToChange,
+  styleDisplayName,
 } from '../messages.js';
 import { ButtonIds } from '../types.js';
 import type { MessageContext } from '../types.js';
 import { logger } from '../logger.js';
+
+// ---------------------------------------------------------------------------
+// Style emoji map for 3-style output labels
+// ---------------------------------------------------------------------------
+
+const STYLE_EMOJI: Record<string, string> = {
+  style_clean_white: '⬜',
+  style_studio: '📸',
+  style_gradient: '🎨',
+  style_lifestyle: '🌿',
+  style_outdoor: '🌳',
+  style_festive: '🎉',
+  style_with_model: '👤',
+  style_clickkar_special: '✨',
+};
 
 // ---------------------------------------------------------------------------
 // Send processed images to user (called by worker after processing completes)
@@ -36,19 +54,29 @@ export async function sendProcessedImages(
   wa: WhatsAppClient,
   videoUrls?: string[],
   storyUrls?: string[],
+  styleLabels?: string[],
 ): Promise<void> {
-  logger.info('Delivering processed images', { phoneNumber, count: outputImageUrls.length, videoCount: videoUrls?.length ?? 0 });
+  logger.info('Delivering processed images', { phoneNumber, count: outputImageUrls.length, videoCount: videoUrls?.length ?? 0, hasStyleLabels: !!styleLabels });
 
   for (let i = 0; i < outputImageUrls.length; i++) {
     const url = outputImageUrls[i]!;
-    const caption =
-      outputImageUrls.length === 1
-        ? msgImageDelivered(language, userName)
-        : msgImageDelivered(language, userName, i + 1, outputImageUrls.length);
+
+    let caption: string;
+    if (styleLabels && styleLabels[i]) {
+      const styleId = styleLabels[i]!;
+      const emoji = STYLE_EMOJI[styleId] ?? '✨';
+      const label = styleDisplayName(styleId, language);
+      caption = msgStyleImageDelivered(language, label, emoji, i + 1, outputImageUrls.length);
+    } else {
+      caption =
+        outputImageUrls.length === 1
+          ? msgImageDelivered(language, userName)
+          : msgImageDelivered(language, userName, i + 1, outputImageUrls.length);
+    }
 
     await wa.sendImage(phoneNumber, url, caption);
 
-    // 5-second gap between batch images for a "wow" moment
+    // Gap between batch images for a "wow" moment
     if (i < outputImageUrls.length - 1) {
       await sleep(1500);
     }
@@ -99,11 +127,19 @@ export async function sendProcessedImages(
   }
 
   await sleep(1000);
-  await wa.sendButtons(phoneNumber, msgAskFeedback(language), [
-    { id: ButtonIds.FEEDBACK_GREAT, title: language === 'hi' ? 'Bahut badiya!' : 'Love it!' },
-    { id: ButtonIds.FEEDBACK_CHANGE, title: language === 'hi' ? 'Kuch badlao' : 'Make a change' },
-    { id: 'try_new_style', title: language === 'hi' ? 'Naya style' : 'New style' },
-  ]);
+  try {
+    await wa.sendButtons(phoneNumber, msgAskFeedback(language), [
+      { id: ButtonIds.FEEDBACK_GREAT, title: language === 'hi' ? 'Love it! ❤️' : 'Love it! ❤️' },
+      { id: ButtonIds.CHANGE_SOMETHING, title: language === 'hi' ? 'Change something' : 'Change something' },
+    ]);
+  } catch {
+    await wa.sendText(
+      phoneNumber,
+      language === 'hi'
+        ? `${msgAskFeedback(language)}\n\n1. Love it!\n2. Change something`
+        : `${msgAskFeedback(language)}\n\n1. Love it!\n2. Change something`,
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -127,6 +163,7 @@ export async function handleDelivered(
           return;
 
         case ButtonIds.FEEDBACK_CHANGE:
+        case ButtonIds.CHANGE_SOMETHING:
           await handleMakeChange(session, user, wa, lang);
           return;
 
@@ -145,6 +182,29 @@ export async function handleDelivered(
             await sendStyleList(session.phoneNumber, lang, wa, user.businessType ?? undefined);
           }
           return;
+
+        case ButtonIds.REDO_STYLE_0:
+        case ButtonIds.REDO_STYLE_1:
+        case ButtonIds.REDO_STYLE_2: {
+          const styleIndexMap: Record<string, number> = {
+            [ButtonIds.REDO_STYLE_0]: 0,
+            [ButtonIds.REDO_STYLE_1]: 1,
+            [ButtonIds.REDO_STYLE_2]: 2,
+          };
+          const selectedIndex = styleIndexMap[message.buttonReplyId!]!;
+          // Store the selected style index as a string flag in earlyPhotoMediaId
+          // so the edit handler knows which ImageJob to redo.
+          await transitionTo(session.phoneNumber, 'DELIVERED', {
+            earlyPhotoMediaId: `redo_style_index:${selectedIndex}`,
+          });
+          await handleAwaitingEdit(
+            { ...session, earlyPhotoMediaId: `redo_style_index:${selectedIndex}` },
+            user,
+            { ...message, listReplyId: 'edit_style', buttonReplyId: undefined },
+            wa,
+          );
+          return;
+        }
 
         case 'reuse_photo':
           // Keep existing photos + orderId — style.ts will auto-reprocess
@@ -223,9 +283,8 @@ export async function handleDelivered(
       if (text.length <= 30 && !hasEditIntent) {
         logger.info('Non-edit short text in DELIVERED, resending buttons', { text });
         await wa.sendButtons(session.phoneNumber, msgAskFeedback(lang), [
-          { id: ButtonIds.FEEDBACK_GREAT, title: lang === 'hi' ? 'Bahut badiya!' : 'Love it!' },
-          { id: ButtonIds.FEEDBACK_CHANGE, title: lang === 'hi' ? 'Kuch badlao' : 'Make a change' },
-          { id: 'try_new_style', title: lang === 'hi' ? 'Naya style' : 'New style' },
+          { id: ButtonIds.FEEDBACK_GREAT, title: 'Love it! ❤️' },
+          { id: ButtonIds.CHANGE_SOMETHING, title: 'Change something' },
         ]);
         return;
       }
@@ -255,11 +314,14 @@ export async function handleDelivered(
   }
 
   // Default: resend feedback buttons
-  await wa.sendButtons(session.phoneNumber, msgAskFeedback(lang), [
-    { id: ButtonIds.FEEDBACK_GREAT, title: lang === 'hi' ? 'Bahut badiya!' : 'Love it!' },
-    { id: ButtonIds.FEEDBACK_CHANGE, title: lang === 'hi' ? 'Kuch badlao' : 'Make a change' },
-    { id: 'try_new_style', title: lang === 'hi' ? 'Naya style' : 'New style' },
-  ]);
+  try {
+    await wa.sendButtons(session.phoneNumber, msgAskFeedback(lang), [
+      { id: ButtonIds.FEEDBACK_GREAT, title: 'Love it! ❤️' },
+      { id: ButtonIds.CHANGE_SOMETHING, title: 'Change something' },
+    ]);
+  } catch {
+    await wa.sendText(session.phoneNumber, msgAskFeedback(lang));
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -315,27 +377,68 @@ async function handleLoveIt(
 
 async function handleMakeChange(
   session: Session,
-  user: User,
+  _user: User,
   wa: WhatsAppClient,
   lang: 'hi' | 'en',
 ): Promise<void> {
-  await wa.sendList(
-    session.phoneNumber,
-    lang === 'hi' ? 'Kya badlana hai?' : 'What would you like to change?',
-    lang === 'hi' ? 'Badlao chunein' : 'Pick a change',
-    [
-      {
-        title: lang === 'hi' ? 'Options' : 'Options',
-        rows: [
-          { id: 'edit_background', title: lang === 'hi' ? 'Background badlo' : 'Change background', description: lang === 'hi' ? 'Naya background lagayein' : 'Apply a new background' },
-          { id: 'edit_lighting', title: lang === 'hi' ? 'Roshni adjust karein' : 'Adjust lighting', description: lang === 'hi' ? 'Bright ya dark karein' : 'Brighter or darker' },
-          { id: 'edit_style', title: lang === 'hi' ? 'Style badlein' : 'Change style', description: lang === 'hi' ? 'Poori style badal dein' : 'Change the whole style' },
-          { id: 'edit_crop', title: lang === 'hi' ? 'Product zoom' : 'Zoom product', description: lang === 'hi' ? 'Product bada dikhayein' : 'Make product bigger' },
-          { id: 'edit_other', title: lang === 'hi' ? 'Kuch aur' : 'Something else', description: lang === 'hi' ? 'Text ya voice note bhejein' : 'Send text or voice note' },
-        ],
-      },
-    ],
-  );
+  // For 3-style orders: ask which style output to change using buttons (max 3).
+  // For single-style orders: show the standard edit list.
+  if (session.currentOrderId) {
+    const order = await prisma.order.findUnique({
+      where: { id: session.currentOrderId },
+      select: { stylesOrdered: true },
+    });
+
+    if (order && order.stylesOrdered.length >= 2) {
+      // Build one button per style (max 3 to fit WhatsApp button limit)
+      const styleButtonIds = [ButtonIds.REDO_STYLE_0, ButtonIds.REDO_STYLE_1, ButtonIds.REDO_STYLE_2] as const;
+      const buttons = order.stylesOrdered.slice(0, 3).map((styleId, idx) => ({
+        id: styleButtonIds[idx]!,
+        title: styleDisplayName(styleId, lang).replace(/^.*?(\w[\w\s&/]+)$/, '$1').slice(0, 20),
+      }));
+
+      try {
+        await wa.sendButtons(session.phoneNumber, msgWhichAdToChange(lang), buttons);
+      } catch {
+        // Fallback: plain text list
+        const list = order.stylesOrdered
+          .slice(0, 3)
+          .map((id, i) => `${i + 1}. ${styleDisplayName(id, lang)}`)
+          .join('\n');
+        await wa.sendText(session.phoneNumber, `${msgWhichAdToChange(lang)}\n\n${list}`);
+      }
+      // Stay in DELIVERED — REDO_STYLE_* buttons are handled above
+      return;
+    }
+  }
+
+  // Single-style order: existing edit list
+  try {
+    await wa.sendList(
+      session.phoneNumber,
+      lang === 'hi' ? 'Kya badlana hai?' : 'What would you like to change?',
+      lang === 'hi' ? 'Badlao chunein' : 'Pick a change',
+      [
+        {
+          title: lang === 'hi' ? 'Options' : 'Options',
+          rows: [
+            { id: 'edit_background', title: lang === 'hi' ? 'Background badlo' : 'Change background', description: lang === 'hi' ? 'Naya background lagayein' : 'Apply a new background' },
+            { id: 'edit_lighting', title: lang === 'hi' ? 'Roshni adjust karein' : 'Adjust lighting', description: lang === 'hi' ? 'Bright ya dark karein' : 'Brighter or darker' },
+            { id: 'edit_style', title: lang === 'hi' ? 'Style badlein' : 'Change style', description: lang === 'hi' ? 'Poori style badal dein' : 'Change the whole style' },
+            { id: 'edit_crop', title: lang === 'hi' ? 'Product zoom' : 'Zoom product', description: lang === 'hi' ? 'Product bada dikhayein' : 'Make product bigger' },
+            { id: 'edit_other', title: lang === 'hi' ? 'Kuch aur' : 'Something else', description: lang === 'hi' ? 'Text ya voice note bhejein' : 'Send text or voice note' },
+          ],
+        },
+      ],
+    );
+  } catch {
+    await wa.sendText(
+      session.phoneNumber,
+      lang === 'hi'
+        ? 'Kya badlana hai? Reply karein:\n1. Background\n2. Roshni\n3. Style\n4. Zoom\n5. Kuch aur'
+        : 'What to change? Reply:\n1. Background\n2. Lighting\n3. Style\n4. Zoom product\n5. Something else',
+    );
+  }
 
   // Stay in DELIVERED — the edit.ts handler will be called from DELIVERED
   // when user responds with their edit choice

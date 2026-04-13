@@ -105,6 +105,12 @@ export const ButtonIds = {
   // Photo batch — process or add instructions
   PROCESS_NOW: 'process_now',
   ADD_INSTRUCTIONS: 'add_instructions',
+  // 3-style output — redo a specific style
+  REDO_STYLE_0: 'redo_style_0',
+  REDO_STYLE_1: 'redo_style_1',
+  REDO_STYLE_2: 'redo_style_2',
+  // Generic "change something" from multi-style feedback
+  CHANGE_SOMETHING: 'change_something',
 } as const;
 
 // Category → recommended style mapping (must stay in sync with resolveSmartStyle in style.ts)

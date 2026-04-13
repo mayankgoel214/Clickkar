@@ -216,11 +216,33 @@ export function msgImageDelivered(lang: Lang, userName?: string, index?: number,
   return `Here it is${name ? ', ' + name : ''}!${counter}\nYour professional product photo is ready.`;
 }
 
+/** Caption for a style-labeled delivery image (3-style V2 flow). */
+export function msgStyleImageDelivered(
+  lang: Lang,
+  styleLabel: string,
+  styleEmoji: string,
+  index: number,
+  total: number,
+): string {
+  if (lang === 'hi') {
+    return `${styleEmoji} *${styleLabel} Ad* (${index}/${total}) taiyaar hai!`;
+  }
+  return `${styleEmoji} Here's your *${styleLabel} ad*! (${index}/${total})`;
+}
+
 export function msgAskFeedback(lang: Lang): string {
   if (lang === 'hi') {
-    return 'Kaise lagi? Neeche se bataiye:';
+    return 'Kaisa laga? Batayein:';
   }
-  return 'How does it look? Let us know:';
+  return 'How do they look? Let us know:';
+}
+
+/** Prompt asking the user WHICH of the 3 style outputs to change. */
+export function msgWhichAdToChange(lang: Lang): string {
+  if (lang === 'hi') {
+    return 'Kaunsa ad badalna hai?';
+  }
+  return 'Which ad would you like to change?';
 }
 
 export function msgThankYou(lang: Lang, isFirstOrder: boolean): string {
