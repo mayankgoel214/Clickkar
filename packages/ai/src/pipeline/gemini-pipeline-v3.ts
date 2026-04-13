@@ -361,6 +361,11 @@ ${heroDynamic}
 
 Product: ${productName}.${componentsList} ${colorEnforcement} Every logo, text, and brand mark preserved exactly as in the input photo.${!allowCondensation ? ' Product surface is completely dry — no water or condensation.' : ''}${!allowWaterEffects ? '\nNo water, liquid, splashes, droplets, or moisture anywhere in the scene. This product has nothing to do with water or liquids.' : ''}
 
+CRITICAL PRODUCT PRESERVATION:
+- Do NOT add liquid, water, juice, or any substance INSIDE the product that was not visible in the original photo. If the bottle or container was EMPTY in the input, it must remain EMPTY in the output.
+- Do NOT change the product's color, opacity, or transparency. A dark grey bottle must stay dark grey — do not make it clear, transparent, or lighter. A solid opaque container must not become semi-transparent.
+- Do NOT add condensation, water droplets, or frost to the product surface unless the user specifically requested it or the product is a cold beverage shown with condensation in the original photo.
+
 The product shows real material properties — packaging catches light with specular highlights, surfaces have micro-texture at full resolution. The product looks PHOTOGRAPHED, not rendered.${params.style === 'style_with_model' ? `
 
 One Indian/South Asian person actively using the product. Natural features: visible pores, asymmetric expression, flyaway hair. Each hand has exactly 5 fingers. Natural body proportions.` : ''}`;

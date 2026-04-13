@@ -1,8 +1,9 @@
 /**
- * SETUP_STYLE handler — V3 streamlined flow.
+ * SETUP_STYLE handler — styles-first flow.
  *
- * After style pick → straight to AWAITING_PHOTO.
- * Instructions merged into photo step (caption).
+ * Styles are picked BEFORE photos are submitted.
+ * After style pack pick (or completing custom 3-step) → go to AWAITING_PHOTO.
+ * Style-change edit path (session.currentOrderId) is unchanged.
  */
 
 import type { WhatsAppClient } from '@whatsads/whatsapp';
@@ -10,7 +11,7 @@ import type { Session, User } from '@whatsads/db';
 import { prisma } from '@whatsads/db';
 import { getImageQueue } from '@whatsads/queue';
 import { transitionTo } from '../db-helpers.js';
-import { styleDisplayName, msgSendPhoto, msgRevisionLimitReached, msgStylePicked, msgAllStylesReady, msgSendProductPhotos } from '../messages.js';
+import { styleDisplayName, msgRevisionLimitReached, msgStylePicked, msgAllStylesReady, msgSendProductPhotos, msgStylePackReady } from '../messages.js';
 import { ListIds, ButtonIds, FREE_REDOS_PER_IMAGE, OUTPUT_STYLES_PER_ORDER } from '../types.js';
 import type { MessageContext } from '../types.js';
 import { logger } from '../logger.js';
@@ -45,7 +46,7 @@ export async function handleSetupStyle(
     }
     if (message.buttonReplyId === ButtonIds.NEW_STYLE) {
       const { sendStyleList } = await import('./onboarding.js');
-      await sendStyleList(phoneNumber, lang, wa, user.businessType ?? undefined);
+      await sendStyleList(phoneNumber, lang, wa, user.businessType ?? undefined, []);
       return;
     }
   }
@@ -66,23 +67,43 @@ export async function handleSetupStyle(
       buttonReplyId: message.buttonReplyId,
       text: message.text,
     }));
-    const { sendStyleList } = await import('./onboarding.js');
     const alreadyPicked = (session.styleSelections as string[]) ?? [];
+    // Show style list for the current step (Smart Pack shown on step 1 automatically)
+    const { sendStyleList } = await import('./onboarding.js');
     await sendStyleList(phoneNumber, lang, wa, user.businessType ?? undefined, alreadyPicked);
     return;
   }
 
-  // --- Smart Pack: auto-select 3 styles and go straight to AWAITING_PHOTO ---
-  if (styleId === ListIds.SMART_PACK) {
-    const smartStyles = resolveSmartPack(user.businessType ?? null);
-    logger.info(JSON.stringify({ event: 'smart_pack_selected', category: user.businessType, styles: smartStyles }));
+  // --- Pack selections: resolve to 3 concrete styles and go to AWAITING_PHOTO ---
+  const packStyles = resolvePackStyles(styleId, user.businessType ?? null);
+  if (packStyles) {
+    // Custom pack: start the 3-step individual picker instead
+    if (styleId === ListIds.CUSTOM_PACK) {
+      await prisma.session.update({
+        where: { phoneNumber },
+        data: {
+          styleSelections: [],
+          stylePickStep: 0,
+          styleSelection: null,
+        },
+      });
+      logger.info(JSON.stringify({ event: 'custom_pack_selected', phoneNumber }));
+      const { sendStyleList } = await import('./onboarding.js');
+      await sendStyleList(phoneNumber, lang, wa, user.businessType ?? undefined, []);
+      return;
+    }
 
-    const styleNames = smartStyles.map(s => styleDisplayName(s, lang));
-    await wa.sendText(phoneNumber, msgAllStylesReady(lang, styleNames));
+    // Pre-made pack or Smart Pack: resolve all 3 styles, then go to AWAITING_PHOTO
+    const packName = packDisplayName(styleId, lang);
+    const styleNames = packStyles.map(s => styleDisplayName(s, lang));
+    logger.info(JSON.stringify({ event: 'style_pack_selected', pack: styleId, category: user.businessType, styles: packStyles }));
 
+    await wa.sendText(phoneNumber, msgStylePackReady(lang, packName, styleNames));
+
+    // Save styles and transition to AWAITING_PHOTO — photos come after styles
     await transitionTo(phoneNumber, 'AWAITING_PHOTO', {
-      styleSelection: smartStyles[0],
-      styleSelections: smartStyles,
+      styleSelection: packStyles[0],
+      styleSelections: packStyles,
       stylePickStep: 0,
       imageMediaIds: [],
       imageStorageUrls: [],
@@ -90,7 +111,6 @@ export async function handleSetupStyle(
       currentOrderId: null,
       earlyPhotoMediaId: null,
     });
-
     await wa.sendText(phoneNumber, msgSendProductPhotos(lang));
     return;
   }
@@ -208,9 +228,11 @@ export async function handleSetupStyle(
     return;
   }
 
-  // All 3 styles picked — transition to AWAITING_PHOTO
+  // All 3 custom styles picked — now go to AWAITING_PHOTO (photos come after styles)
   const styleNames = updatedSelections.map(s => styleDisplayName(s, lang));
   await wa.sendText(phoneNumber, msgAllStylesReady(lang, styleNames));
+
+  logger.info('Custom 3-step style pick complete, transitioning to AWAITING_PHOTO', { phoneNumber, styles: updatedSelections });
 
   await transitionTo(phoneNumber, 'AWAITING_PHOTO', {
     styleSelection: updatedSelections[0],
@@ -222,19 +244,63 @@ export async function handleSetupStyle(
     currentOrderId: null,
     earlyPhotoMediaId: null,
   });
-
   await wa.sendText(phoneNumber, msgSendProductPhotos(lang));
-
-  logger.info('All 3 styles selected, awaiting photo', { phoneNumber, styles: updatedSelections });
 }
 
 // ---------------------------------------------------------------------------
 
-// smart_pack is intentionally included so the list reply is accepted;
-// it is resolved to 3 concrete styles before being saved to the session.
-const VALID_STYLE_IDS = new Set<string>(
-  [...Object.values(ListIds).filter(id => id.startsWith('style_')), ListIds.SMART_PACK],
-);
+// All pack IDs and individual style IDs that are valid list reply values.
+// Pack IDs are resolved to concrete style arrays before being saved.
+const PACK_IDS = new Set<string>([
+  ListIds.SMART_PACK,
+  ListIds.BESTSELLER_PACK,
+  ListIds.FESTIVAL_PACK,
+  ListIds.ACTION_PACK,
+  ListIds.CUSTOM_PACK,
+]);
+
+const VALID_STYLE_IDS = new Set<string>([
+  ...Object.values(ListIds).filter(id => id.startsWith('style_')),
+  ...Array.from(PACK_IDS),
+]);
+
+/**
+ * Returns the 3 concrete style IDs for a given pack, or null if the styleId is
+ * not a pack (meaning it's an individual style ID for the custom 3-step flow).
+ * Returns an empty array for CUSTOM_PACK (caller handles separately).
+ */
+function resolvePackStyles(styleId: string, category: string | null): string[] | null {
+  if (styleId === ListIds.SMART_PACK) {
+    return resolveSmartPack(category);
+  }
+  if (styleId === ListIds.BESTSELLER_PACK) {
+    return ['style_lifestyle', 'style_studio', 'style_gradient'];
+  }
+  if (styleId === ListIds.FESTIVAL_PACK) {
+    return ['style_festive', 'style_lifestyle', 'style_clean_white'];
+  }
+  if (styleId === ListIds.ACTION_PACK) {
+    return ['style_with_model', 'style_outdoor', 'style_lifestyle'];
+  }
+  if (styleId === ListIds.CUSTOM_PACK) {
+    return []; // signal caller to start 3-step picker
+  }
+  return null; // not a pack — individual style
+}
+
+/**
+ * Human-readable display name for a pack.
+ */
+function packDisplayName(packId: string, lang: 'hi' | 'en'): string {
+  const names: Record<string, { hi: string; en: string }> = {
+    smart_pack: { hi: 'Smart Pack \u2728', en: 'Smart Pack \u2728' },
+    bestseller_pack: { hi: 'Best Seller Pack \ud83c\udfc6', en: 'Best Seller Pack \ud83c\udfc6' },
+    festival_pack: { hi: 'Festival Pack \ud83c\udf89', en: 'Festival Pack \ud83c\udf89' },
+    action_pack: { hi: 'Action Pack \ud83d\udcaa', en: 'Action Pack \ud83d\udcaa' },
+    custom_pack: { hi: 'Custom \ud83c\udfa8', en: 'Custom \ud83c\udfa8' },
+  };
+  return names[packId]?.[lang] ?? packId;
+}
 
 /**
  * Resolves Smart Pack to the 3 best concrete styles for the given product category.

@@ -219,17 +219,20 @@ export async function handleDelivered(
           return;
 
         case 'new_photo':
-          // Clear images and re-ask for style
-          await transitionTo(session.phoneNumber, 'SETUP_STYLE', {
+          // V4: clear images and send to AWAITING_PHOTO — style picked AFTER photos
+          await transitionTo(session.phoneNumber, 'AWAITING_PHOTO', {
             imageMediaIds: [],
             imageStorageUrls: [],
             currentOrderId: null,
             styleSelection: null,
+            styleSelections: [],
+            stylePickStep: 0,
             voiceInstructions: null,
+            earlyPhotoMediaId: null,
           });
           {
-            const { sendStyleList } = await import('./onboarding.js');
-            await sendStyleList(session.phoneNumber, lang, wa, user.businessType ?? undefined);
+            const { msgSendProductPhotos } = await import('../messages.js');
+            await wa.sendText(session.phoneNumber, msgSendProductPhotos(lang));
           }
           return;
       }

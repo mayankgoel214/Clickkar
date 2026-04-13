@@ -71,6 +71,21 @@ export function msgSendProductPhotos(lang: Lang): string {
   return 'Send photos of your product! You can send 1-5 photos of the SAME product from different angles. Say "done" when finished.';
 }
 
+export function msgPickStylePack(lang: Lang): string {
+  if (lang === 'hi') {
+    return 'Ek style pack chuniye — ek tap mein 3 best styles ready ho jayenge!';
+  }
+  return 'Pick a style pack — one tap and 3 styles are ready!';
+}
+
+export function msgStylePackReady(lang: Lang, packName: string, styleNames: string[]): string {
+  const list = styleNames.map((n, i) => `${i + 1}. ${n}`).join('\n');
+  if (lang === 'hi') {
+    return `${packName} select kiya! \u2728\n\n${list}\n\nAb order create ho raha hai...`;
+  }
+  return `${packName} selected! \u2728\n\n${list}\n\nCreating your order now...`;
+}
+
 // ---------------------------------------------------------------------------
 // RETURNING USER
 // ---------------------------------------------------------------------------

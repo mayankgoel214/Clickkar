@@ -104,9 +104,28 @@ export async function handleIncomingMessage(
         await handleSetupCategory(session, user, message, wa);
         break;
 
-      case 'SETUP_STYLE':
+      case 'SETUP_STYLE': {
+        // Escape hatch — user wants to start over from scratch
+        if (isEscapeIntent(message)) {
+          logger.info('Escape intent in SETUP_STYLE — resetting to IDLE', { phoneNumber });
+          await transitionTo(phoneNumber, 'IDLE', {
+            currentOrderId: null,
+            styleSelection: null,
+            styleSelections: [],
+            stylePickStep: 0,
+            voiceInstructions: null,
+            imageMediaIds: [],
+            imageStorageUrls: [],
+            earlyPhotoMediaId: null,
+          });
+          const freshSession = await getSession(phoneNumber);
+          if (freshSession) await handleIdle(freshSession, user, message, wa);
+          break;
+        }
+
         await handleSetupStyle(session, user, message, wa);
         break;
+      }
 
       case 'AWAITING_PHOTO':
         await handleAwaitingPhoto(session, user, message, wa);

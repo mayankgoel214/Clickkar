@@ -1,8 +1,8 @@
 /**
- * Onboarding handlers — V3 streamlined flow.
+ * Onboarding handlers — styles-first flow.
  *
- * New users: IDLE → SETUP_LANGUAGE → SETUP_NAME → SETUP_CATEGORY → SETUP_STYLE → AWAITING_PHOTO
- * Returning users: IDLE → (confirm style) → AWAITING_PHOTO
+ * New users: IDLE → SETUP_LANGUAGE → SETUP_NAME → SETUP_CATEGORY → SETUP_STYLE → AWAITING_PHOTO → payment
+ * Returning users: IDLE → (confirm style or SETUP_STYLE) → AWAITING_PHOTO → payment
  */
 
 import type { WhatsAppClient } from '@whatsads/whatsapp';
@@ -15,6 +15,7 @@ import {
   styleDisplayName,
   msgAllStylesReady,
   msgSendProductPhotos,
+  msgPickStylePack,
 } from '../messages.js';
 import { ListIds, ButtonIds, CATEGORY_STYLE_RECOMMENDATION, OUTPUT_STYLES_PER_ORDER } from '../types.js';
 import type { MessageContext } from '../types.js';
@@ -76,10 +77,14 @@ export async function handleIdle(
     }
 
     if (buttonId === ButtonIds.NEW_STYLE || buttonId === 'try_new_style') {
-      // Show style list — fresh 3-step picker
+      // Show individual style list (styles-first: step 1 of 3)
       await transitionTo(session.phoneNumber, 'SETUP_STYLE', {
+        currentOrderId: null,
+        styleSelection: null,
         styleSelections: [],
         stylePickStep: 0,
+        imageMediaIds: [],
+        imageStorageUrls: [],
         earlyPhotoMediaId: null,
       });
       await sendStyleList(session.phoneNumber, lang, wa, user.businessType ?? undefined, []);
@@ -187,16 +192,8 @@ export async function handleIdle(
       return;
     }
 
-    // --- Returning user without saved style: go to style picker ---
-    logger.info('Returning user — no lastStyleUsed, sending style picker', { phoneNumber: session.phoneNumber });
-    try {
-      await wa.sendText(
-        session.phoneNumber,
-        lang === 'hi' ? `Wapas aao, ${user.name} ji!` : `Welcome back, ${user.name}!`,
-      );
-    } catch (txtErr) {
-      logger.error('sendText failed for welcome back message', { phoneNumber: session.phoneNumber, error: String(txtErr) });
-    }
+    // --- Returning user without saved style: go to SETUP_STYLE (styles before photos) ---
+    logger.info('Returning user — no lastStyleUsed, transitioning to SETUP_STYLE', { phoneNumber: session.phoneNumber });
     await transitionTo(session.phoneNumber, 'SETUP_STYLE', {
       imageMediaIds: [],
       imageStorageUrls: [],
@@ -205,15 +202,17 @@ export async function handleIdle(
       stylePickStep: 0,
       voiceInstructions: null,
       currentOrderId: null,
+      earlyPhotoMediaId: null,
     });
     try {
-      await sendStyleList(session.phoneNumber, lang, wa, user.businessType ?? undefined, []);
-    } catch (listErr) {
-      logger.error('sendStyleList failed in handleIdle, falling back to sendText', { phoneNumber: session.phoneNumber, error: String(listErr) });
-      await wa.sendText(session.phoneNumber, lang === 'hi'
-        ? 'Kaunsa style chahiye? Clean White, Lifestyle, Gradient, Outdoor, Studio, Festive, Minimal, ya Model ke saath?'
-        : 'Which style? Clean White, Lifestyle, Gradient, Outdoor, Studio, Festive, Minimal, or With Model?');
+      await wa.sendText(
+        session.phoneNumber,
+        lang === 'hi' ? `Wapas aao, ${user.name} ji!` : `Welcome back, ${user.name}!`,
+      );
+    } catch (txtErr) {
+      logger.error('sendText failed for welcome back message', { phoneNumber: session.phoneNumber, error: String(txtErr) });
     }
+    await sendStyleList(session.phoneNumber, lang, wa, user.businessType ?? undefined, []);
     return;
   }
 
@@ -320,10 +319,16 @@ export async function handleSetupCategory(
 
   await updateUser(session.phoneNumber, { businessType: categoryId });
 
-  // INSTANT: transition to style and send style list — no filler message
+  // Styles-first: go to SETUP_STYLE so user picks style before sending photos
   await transitionTo(session.phoneNumber, 'SETUP_STYLE', {
+    currentOrderId: null,
+    styleSelection: null,
     styleSelections: [],
     stylePickStep: 0,
+    imageMediaIds: [],
+    imageStorageUrls: [],
+    voiceInstructions: null,
+    earlyPhotoMediaId: null,
   });
   await sendStyleList(session.phoneNumber, lang, wa, categoryId, []);
 }
@@ -363,6 +368,71 @@ export async function sendCategoryList(
   );
 }
 
+/**
+ * Sends the style PACK picker — a single WhatsApp list where each row is a
+ * pre-made 3-style bundle. Selecting one pack resolves all 3 styles at once.
+ * "Custom" triggers the sequential 3-step individual style picker.
+ *
+ * Called from SETUP_STYLE state (after photos are already collected).
+ */
+export async function sendStylePackList(
+  phoneNumber: string,
+  lang: 'hi' | 'en',
+  wa: WhatsAppClient,
+  categoryId?: string,
+): Promise<void> {
+  const headerText = msgPickStylePack(lang);
+
+  const rows = [
+    {
+      id: ListIds.SMART_PACK,
+      title: lang === 'hi' ? 'Smart Pack \u2728' : 'Smart Pack \u2728',
+      description: lang === 'hi'
+        ? 'AI aapke product ke liye 3 best styles chunega'
+        : 'AI picks the best 3 styles for your product',
+    },
+    {
+      id: ListIds.BESTSELLER_PACK,
+      title: lang === 'hi' ? 'Best Seller Pack \ud83c\udfc6' : 'Best Seller Pack \ud83c\udfc6',
+      description: lang === 'hi'
+        ? 'Lifestyle + Studio + Dark Luxury'
+        : 'Lifestyle + Studio + Dark Luxury',
+    },
+    {
+      id: ListIds.FESTIVAL_PACK,
+      title: lang === 'hi' ? 'Festival Pack \ud83c\udf89' : 'Festival Pack \ud83c\udf89',
+      description: lang === 'hi'
+        ? 'Tyohar + Lifestyle + Clean White'
+        : 'Festive + Lifestyle + Clean White',
+    },
+    {
+      id: ListIds.ACTION_PACK,
+      title: lang === 'hi' ? 'Action Pack \ud83d\udcaa' : 'Action Pack \ud83d\udcaa',
+      description: lang === 'hi'
+        ? 'Model + Outdoor + Lifestyle'
+        : 'With Model + Outdoor + Lifestyle',
+    },
+    {
+      id: ListIds.CUSTOM_PACK,
+      title: lang === 'hi' ? 'Custom \ud83c\udfa8' : 'Custom \ud83c\udfa8',
+      description: lang === 'hi'
+        ? 'Khud 3 styles chuniye'
+        : 'Pick 3 styles yourself',
+    },
+  ];
+
+  await wa.sendList(
+    phoneNumber,
+    headerText,
+    lang === 'hi' ? 'Pack chuniye' : 'Choose pack',
+    [{ title: lang === 'hi' ? 'Style Packs' : 'Style Packs', rows }],
+  );
+}
+
+/**
+ * Sends the individual style list for a specific step in the custom 3-step picker.
+ * Only called when the user selects Custom pack.
+ */
 export async function sendStyleList(
   phoneNumber: string,
   lang: 'hi' | 'en',
@@ -372,13 +442,14 @@ export async function sendStyleList(
 ): Promise<void> {
   const recStyleId = categoryId ? (CATEGORY_STYLE_RECOMMENDATION[categoryId] ?? null) : null;
   const pickNumber = alreadyPicked.length + 1; // 1, 2, or 3
+  const isFirstPick = pickNumber === 1;
 
   const makeDesc = (id: string, desc: string) => {
     return id === recStyleId ? `${desc} -- Recommended` : desc;
   };
 
-  // All style rows (excluding already-picked styles)
-  const allStyleRows = [
+  // All individual style rows (excluding already-picked styles)
+  const individualRows = [
     { id: ListIds.STYLE_CLEAN_WHITE, title: styleDisplayName(ListIds.STYLE_CLEAN_WHITE, lang), description: makeDesc(ListIds.STYLE_CLEAN_WHITE, 'Pure white background') },
     { id: ListIds.STYLE_LIFESTYLE, title: styleDisplayName(ListIds.STYLE_LIFESTYLE, lang), description: makeDesc(ListIds.STYLE_LIFESTYLE, 'Real-life setting') },
     { id: ListIds.STYLE_GRADIENT, title: styleDisplayName(ListIds.STYLE_GRADIENT, lang), description: makeDesc(ListIds.STYLE_GRADIENT, 'Cinematic dark & dramatic') },
@@ -388,33 +459,29 @@ export async function sendStyleList(
     { id: ListIds.STYLE_WITH_MODEL, title: styleDisplayName(ListIds.STYLE_WITH_MODEL, lang), description: makeDesc(ListIds.STYLE_WITH_MODEL, 'AI person with product') },
   ].filter(row => !alreadyPicked.includes(row.id));
 
+  // Smart Pack is shown as the first option on step 1 — tapping it picks all 3 at once
+  const allStyleRows = isFirstPick
+    ? [
+        {
+          id: ListIds.SMART_PACK,
+          title: lang === 'hi' ? 'Smart Pack \u2728' : 'Smart Pack \u2728',
+          description: lang === 'hi'
+            ? 'AI aapke product ke liye 3 best styles chunega'
+            : 'AI picks the best 3 styles for your product',
+        },
+        ...individualRows,
+      ]
+    : individualRows;
+
   const headerText = lang === 'hi'
     ? `Style ${pickNumber} of ${OUTPUT_STYLES_PER_ORDER} chuniye:`
     : `Pick style ${pickNumber} of ${OUTPUT_STYLES_PER_ORDER}:`;
-
-  const rows: Array<{ id: string; title: string; description: string }> = [];
-
-  // Only show Smart Pack on first pick
-  if (alreadyPicked.length === 0) {
-    rows.push({
-      id: ListIds.SMART_PACK,
-      title: 'Smart Pack ✨',
-      description: lang === 'hi' ? 'AI aapke product ke liye 3 best styles chunega' : 'AI picks the best 3 styles for your product',
-    });
-  }
-
-  rows.push(...allStyleRows);
 
   await wa.sendList(
     phoneNumber,
     headerText,
     lang === 'hi' ? 'Chuniye' : 'Choose',
-    [
-      {
-        title: 'Styles',
-        rows,
-      },
-    ],
+    [{ title: 'Styles', rows: allStyleRows }],
   );
 }
 

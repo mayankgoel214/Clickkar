@@ -133,8 +133,13 @@ export const ListIds = {
   CAT_CANDLE: 'cat_candle',
   CAT_BAG: 'cat_bag',
   CAT_GENERAL: 'cat_general',
-  // Styles
+  // Style packs (single-tap = all 3 styles resolved)
   SMART_PACK: 'smart_pack',
+  BESTSELLER_PACK: 'bestseller_pack',
+  FESTIVAL_PACK: 'festival_pack',
+  ACTION_PACK: 'action_pack',
+  CUSTOM_PACK: 'custom_pack',
+  // Individual styles (used in custom 3-step picker)
   STYLE_CLEAN_WHITE: 'style_clean_white',
   STYLE_LIFESTYLE: 'style_lifestyle',
   STYLE_GRADIENT: 'style_gradient',

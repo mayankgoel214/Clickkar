@@ -68,16 +68,18 @@ export async function handleAwaitingPhoto(
   if (message.messageType === 'interactive' && message.buttonReplyId) {
     const { ButtonIds } = await import('../types.js');
 
-    // Handle "Process now" — advance immediately
+    // Handle "Process now" — styles are already picked before photos in styles-first flow
     if (message.buttonReplyId === ButtonIds.PROCESS_NOW) {
       if (session.imageStorageUrls.length === 0) return;
       const freshSession = await prisma.session.findUnique({ where: { phoneNumber } });
-      if (freshSession) await advanceToPayment(freshSession, user, wa, lang);
+      if (!freshSession) return;
+      await advanceToPayment(freshSession, user, wa, lang);
       return;
     }
 
-    // Handle "Add instructions" — ask for text or voice, wait for response
+    // Handle "Add instructions" — styles already picked, ask for instructions then create order
     if (message.buttonReplyId === ButtonIds.ADD_INSTRUCTIONS) {
+      if (session.imageStorageUrls.length === 0) return;
       await prisma.session.update({
         where: { phoneNumber },
         data: { earlyPhotoMediaId: 'awaiting_instructions' },
@@ -108,9 +110,17 @@ export async function handleAwaitingPhoto(
       return;
     }
     if (message.buttonReplyId === ButtonIds.NEW_STYLE) {
-      await transitionTo(phoneNumber, 'SETUP_STYLE');
+      await transitionTo(phoneNumber, 'SETUP_STYLE', {
+        currentOrderId: null,
+        styleSelection: null,
+        styleSelections: [],
+        stylePickStep: 0,
+        imageMediaIds: [],
+        imageStorageUrls: [],
+        earlyPhotoMediaId: null,
+      });
       const { sendStyleList } = await import('./onboarding.js');
-      await sendStyleList(phoneNumber, lang, wa, user.businessType ?? undefined);
+      await sendStyleList(phoneNumber, lang, wa, user.businessType ?? undefined, []);
       return;
     }
   }
