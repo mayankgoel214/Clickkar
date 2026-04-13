@@ -21,12 +21,16 @@ export async function uploadFile(
 ): Promise<string> {
   const client = getStorageClient();
 
+  // Video files can be 5-20 MB — give them a longer timeout than images.
+  const isVideo = contentType.startsWith('video/');
+  const timeoutMs = isVideo ? 120_000 : 30_000;
+
   const uploadPromise = client.storage.from(bucket).upload(path, buffer, {
     contentType,
     upsert: true,
   });
   const timeoutPromise = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error(`Storage upload timed out after 30s`)), 30_000)
+    setTimeout(() => reject(new Error(`Storage upload timed out after ${timeoutMs / 1000}s`)), timeoutMs)
   );
   const { error } = await Promise.race([uploadPromise, timeoutPromise]);
 

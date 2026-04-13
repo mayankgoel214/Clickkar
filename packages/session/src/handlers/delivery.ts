@@ -40,6 +40,7 @@ const STYLE_EMOJI: Record<string, string> = {
   style_festive: '🎉',
   style_with_model: '👤',
   style_clickkar_special: '✨',
+  style_video_shoot: '🎬',
 };
 
 // ---------------------------------------------------------------------------
@@ -82,16 +83,24 @@ export async function sendProcessedImages(
     }
   }
 
-  // Video ads disabled for now
-  // if (videoUrls && videoUrls.length > 0) {
-  //   await sleep(1000);
-  //   for (const vUrl of videoUrls) {
-  //     const videoCaption = language === 'hi'
-  //       ? 'Bonus: Aapka product video ad!'
-  //       : 'Bonus: Your product video ad!';
-  //     await wa.sendVideo(phoneNumber, vUrl, videoCaption);
-  //   }
-  // }
+  // Send video ads if available
+  if (videoUrls && videoUrls.length > 0) {
+    await sleep(1000);
+    const videoCaption =
+      language === 'hi'
+        ? 'Bonus! Aapka video ad bhi ready hai — WhatsApp Status ke liye perfect! 🎬'
+        : 'Bonus! Your video ad is ready too — perfect for WhatsApp Status! 🎬';
+    for (const vUrl of videoUrls) {
+      try {
+        await wa.sendVideo(phoneNumber, vUrl, videoCaption);
+      } catch (videoErr) {
+        logger.warn('Failed to send video ad', {
+          phoneNumber,
+          error: videoErr instanceof Error ? videoErr.message : String(videoErr),
+        });
+      }
+    }
+  }
 
   // Story format disabled for now
   // if (storyUrls && storyUrls.length > 0) {

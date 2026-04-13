@@ -39,6 +39,7 @@ const STYLE_BACKGROUNDS: Record<string, BackgroundConfig> = {
   style_minimal:     { r: 250, g: 248, b: 245, vignetteR: 230, vignetteG: 228, vignetteB: 225 },
   style_model:            { r: 235, g: 230, b: 225, vignetteR: 200, vignetteG: 195, vignetteB: 185 },
   style_clickkar_special: { r: 30,  g: 30,  b: 30 },
+  style_video_shoot:      { r: 20,  g: 20,  b: 30 },
 };
 
 // Festive gets RANDOMIZED rich colors — deep Indian festive palette

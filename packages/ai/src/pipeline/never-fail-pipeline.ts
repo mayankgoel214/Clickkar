@@ -12,6 +12,7 @@ import type { ProcessImageParams, ProcessImageResult } from './orchestrator.js';
 import { downloadBuffer, uploadToStorage, createBriaFallbackShot, postProcessFinal, addAILabel, generateStoryFormat } from './fallback.js';
 import { runDeterministicChecks } from '../qa/deterministic-checks.js';
 import { createStyledStudioShot, createCleanStudioShot, createEnhancedOriginal } from './styled-studio.js';
+import { generateCinematicVideo } from '../video/cinematic-video.js';
 
 export interface NeverFailResult {
   outputUrl: string;
@@ -28,6 +29,55 @@ export interface NeverFailResult {
   inputAssessment?: any;
   rejected?: boolean;
   rejectionReason?: string;
+}
+
+/**
+ * Generate a cinematic video ad from a public image URL.
+ * Tries LTX-2.3 Fast first; falls back to Ken Burns on failure.
+ * Non-fatal — returns undefined if both fail.
+ */
+async function tryGenerateVideo(
+  outputUrl: string,
+  outputBuffer: Buffer,
+  style?: string,
+  category?: string,
+): Promise<string | undefined> {
+  // Attempt 1: cinematic LTX video (AI, ~15-25s)
+  try {
+    const cinematic = await generateCinematicVideo({
+      imageUrl: outputUrl,
+      style,
+      duration: 5,
+      aspectRatio: '9:16',
+    });
+    if (cinematic) {
+      const videoBuffer = await downloadBuffer(cinematic.videoUrl);
+      const videoUrl = await uploadToStorage(videoBuffer, `video_cinematic_${Date.now()}.mp4`, 'video/mp4');
+      console.info(JSON.stringify({ event: 'cinematic_video_uploaded', durationMs: cinematic.durationMs }));
+      return videoUrl;
+    }
+  } catch (cinematicErr) {
+    console.warn(JSON.stringify({
+      event: 'cinematic_video_failed_falling_back_to_ken_burns',
+      error: cinematicErr instanceof Error ? cinematicErr.message : String(cinematicErr),
+    }));
+  }
+
+  // Attempt 2: Ken Burns (FFmpeg, ~1-2s, zero API cost)
+  try {
+    const { generateKenBurnsVideo } = await import('../video/ken-burns.js');
+    const kenBurns = await generateKenBurnsVideo(outputBuffer, { productCategory: category, durationSec: 5 });
+    const videoUrl = await uploadToStorage(kenBurns.videoBuffer, `video_kenburns_${Date.now()}.mp4`, 'video/mp4');
+    console.info(JSON.stringify({ event: 'ken_burns_video_uploaded' }));
+    return videoUrl;
+  } catch (kbErr) {
+    console.warn(JSON.stringify({
+      event: 'ken_burns_video_failed',
+      error: kbErr instanceof Error ? kbErr.message : String(kbErr),
+    }));
+  }
+
+  return undefined;
 }
 
 /**
@@ -77,22 +127,21 @@ export async function processImageNeverFail(
       ]);
       clearTimeout(tier1Timer!);
 
-      // Use storyUrl from V3 pipeline (already generated in parallel)
-      // Fall back to generating from outputBuffer if V3 didn't produce one
-      let storyUrl = result.storyUrl;
-      if (!storyUrl) {
-        try {
-          if (result.outputBuffer) {
-            storyUrl = await tryGenerateStory(result.outputBuffer, style);
-          } else {
-            const outputBuffer = await downloadBuffer(result.outputUrl);
-            storyUrl = await tryGenerateStory(outputBuffer, style);
-          }
-        } catch { /* story is optional */ }
-      }
+      // Resolve output buffer once (reused for both story and video Ken Burns fallback)
+      const outputBuffer = result.outputBuffer ?? await downloadBuffer(result.outputUrl);
 
-      console.info(JSON.stringify({ event: 'never_fail_tier1_success', qaScore: result.qaScore, hasStory: !!storyUrl, durationMs: Date.now() - totalStart }));
-      return { ...result, storyUrl, tier: 1 };
+      // Generate story and video in PARALLEL — both are non-fatal optional extras
+      const [storyUrl, videoUrl] = await Promise.all([
+        result.storyUrl
+          ? Promise.resolve(result.storyUrl)
+          : tryGenerateStory(outputBuffer, style),
+        result.videoUrl
+          ? Promise.resolve(result.videoUrl)
+          : tryGenerateVideo(result.outputUrl, outputBuffer, style, category),
+      ]);
+
+      console.info(JSON.stringify({ event: 'never_fail_tier1_success', qaScore: result.qaScore, hasStory: !!storyUrl, hasVideo: !!videoUrl, durationMs: Date.now() - totalStart }));
+      return { ...result, storyUrl, videoUrl, tier: 1 };
     } catch (err) {
       clearTimeout(tier1Timer!);
       const reason = err instanceof Error ? err.message : String(err);
@@ -122,18 +171,13 @@ export async function processImageNeverFail(
 
         const outputUrl = await uploadToStorage(output, `output_tier2a_${Date.now()}.jpg`);
 
-        // Generate video (non-fatal)
-        let videoUrl: string | undefined;
-        try {
-          const { generateKenBurnsVideo } = await import('../video/ken-burns.js');
-          const videoResult = await generateKenBurnsVideo(output, { productCategory: category, durationSec: 5 });
-          videoUrl = await uploadToStorage(videoResult.videoBuffer, `video_tier2a_${Date.now()}.mp4`, 'video/mp4');
-        } catch { /* video is optional */ }
+        // Generate video and story in PARALLEL (both non-fatal)
+        const [videoUrl, storyUrl] = await Promise.all([
+          tryGenerateVideo(outputUrl, output, style, category),
+          tryGenerateStory(output, style),
+        ]);
 
-        // Generate 9:16 story format (non-fatal)
-        const storyUrl = await tryGenerateStory(output, style);
-
-        console.info(JSON.stringify({ event: 'never_fail_tier2a_bria_success', hasStory: !!storyUrl, durationMs: Date.now() - totalStart, qaEstimate: 65 }));
+        console.info(JSON.stringify({ event: 'never_fail_tier2a_bria_success', hasStory: !!storyUrl, hasVideo: !!videoUrl, durationMs: Date.now() - totalStart, qaEstimate: 65 }));
         return { outputUrl, storyUrl, videoUrl, qaScore: 65, pipeline: 'bria-fallback', attempts: 0, durationMs: Date.now() - totalStart, tier: 2, tierReason: 'V3 creative failed, Bria Product Shot succeeded' };
       } else {
         console.warn(JSON.stringify({ event: 'never_fail_tier2a_bria_qa_fail', fillPct: briaCheck.estimatedFillPct, reason: briaCheck.failReason }));
@@ -163,18 +207,13 @@ export async function processImageNeverFail(
       const output = styledBuffer;
       const outputUrl = await uploadToStorage(output, `output_tier2b_${Date.now()}.jpg`);
 
-      // Generate video (non-fatal)
-      let videoUrl: string | undefined;
-      try {
-        const { generateKenBurnsVideo } = await import('../video/ken-burns.js');
-        const videoResult = await generateKenBurnsVideo(output, { productCategory: category, durationSec: 5 });
-        videoUrl = await uploadToStorage(videoResult.videoBuffer, `video_tier2b_${Date.now()}.mp4`, 'video/mp4');
-      } catch { /* video is optional */ }
+      // Generate video and story in PARALLEL (both non-fatal)
+      const [videoUrl, storyUrl] = await Promise.all([
+        tryGenerateVideo(outputUrl, output, style, category),
+        tryGenerateStory(output, style),
+      ]);
 
-      // Generate 9:16 story format (non-fatal)
-      const storyUrl = await tryGenerateStory(output, style);
-
-      console.info(JSON.stringify({ event: 'never_fail_tier2b_success', hasStory: !!storyUrl, durationMs: Date.now() - totalStart }));
+      console.info(JSON.stringify({ event: 'never_fail_tier2b_success', hasStory: !!storyUrl, hasVideo: !!videoUrl, durationMs: Date.now() - totalStart }));
       return { outputUrl, storyUrl, videoUrl, qaScore: 50, pipeline: 'styled-studio', attempts: 0, durationMs: Date.now() - totalStart, tier: 2, tierReason: 'V3 creative + Bria failed, styled studio succeeded' };
     } catch (err) {
       clearTimeout(tier2bTimer!);

@@ -144,3 +144,26 @@ export {
   type KenBurnsOptions,
   type KenBurnsResult,
 } from './video/ken-burns.js';
+
+export {
+  generateCinematicVideo,
+  type CinematicVideoOptions,
+  type CinematicVideoResult,
+} from './video/cinematic-video.js';
+
+export {
+  generateCTAFrame,
+  type CTAFrameOptions,
+} from './video/cta-frame.js';
+
+export {
+  getMusicCategory,
+  generateSilentTrack,
+  type MusicCategory,
+} from './video/music.js';
+
+export {
+  generateMultiShotVideo,
+  type MultiShotVideoOptions,
+  type MultiShotVideoResult,
+} from './video/multi-shot-video.js';

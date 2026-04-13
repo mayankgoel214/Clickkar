@@ -53,6 +53,7 @@ enum JobPipeline {
   bria
   nano_banana
   composite
+  video_multi_shot
 }
 
 enum JobStatus {
@@ -237,6 +238,7 @@ model ImageJob {
   completedAt     DateTime?   @map("completed_at")
   errorMessage    String?     @map("error_message")
   durationMs      Int?        @map("duration_ms")
+  videoOutputUrl  String?     @map("video_output_url")
   createdAt       DateTime    @default(now()) @map("created_at")
   updatedAt       DateTime    @updatedAt @map("updated_at")
 

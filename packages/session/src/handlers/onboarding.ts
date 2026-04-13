@@ -458,6 +458,7 @@ export async function sendStyleList(
     { id: ListIds.STYLE_STUDIO, title: styleDisplayName(ListIds.STYLE_STUDIO, lang), description: makeDesc(ListIds.STYLE_STUDIO, 'Colored backdrop studio') },
     { id: ListIds.STYLE_FESTIVE, title: styleDisplayName(ListIds.STYLE_FESTIVE, lang), description: makeDesc(ListIds.STYLE_FESTIVE, 'Festive/Diwali vibes') },
     { id: ListIds.STYLE_WITH_MODEL, title: styleDisplayName(ListIds.STYLE_WITH_MODEL, lang), description: makeDesc(ListIds.STYLE_WITH_MODEL, 'AI person with product') },
+    { id: ListIds.STYLE_VIDEO_SHOOT, title: '🎬 Video Ad (Beta)', description: lang === 'hi' ? 'Reels aur Status ke liye' : 'For Reels & Status' },
   ].filter(row => !alreadyPicked.includes(row.id));
 
   // Smart Pack is shown as the first option on step 1 — tapping it picks all 3 at once

@@ -149,4 +149,5 @@ export const ListIds = {
   STYLE_STUDIO: 'style_studio',
   STYLE_FESTIVE: 'style_festive',
   STYLE_WITH_MODEL: 'style_with_model',
+  STYLE_VIDEO_SHOOT: 'style_video_shoot',
 } as const;

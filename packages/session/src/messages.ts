@@ -348,6 +348,7 @@ export function styleDisplayName(styleId: string, lang: Lang): string {
     style_festive: { hi: 'Tyohar Style', en: 'Festive Style' },
     style_minimal: { hi: 'Minimal Saaf', en: 'Minimal & Clean' },
     style_with_model: { hi: 'Model Ke Saath', en: 'With Model' },
+    style_video_shoot: { hi: 'Video Ad 🎬 (Beta)', en: 'Video Ad 🎬 (Beta)' },
   };
   return names[styleId]?.[lang] ?? styleId;
 }

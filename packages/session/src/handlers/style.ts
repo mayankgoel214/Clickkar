@@ -328,5 +328,6 @@ function resolveStyleFromText(text: string): string | null {
   if (text.includes('festive') || text.includes('tyohar') || text.includes('festival')) return ListIds.STYLE_FESTIVE;
   if (text.includes('minimal') || text.includes('simple')) return 'style_minimal';
   if (text.includes('model') || text.includes('person') || text.includes('human')) return ListIds.STYLE_WITH_MODEL;
+  if (text.includes('video') || text.includes('reel') || text.includes('clip')) return ListIds.STYLE_VIDEO_SHOOT;
   return null;
 }

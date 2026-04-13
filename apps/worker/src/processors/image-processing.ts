@@ -147,149 +147,308 @@ export async function processImageJob(job: Job): Promise<void> {
   }
 
   try {
-    // Use never-fail pipeline — always returns a result
-    log('Using Never-Fail pipeline');
-
-    // Progress update — sent after 30s delay, only for the first job
-    let stage2Sent = false;
-    let stage2Timer: ReturnType<typeof setTimeout> | undefined;
-    if (isFirstJob) {
-      stage2Timer = setTimeout(async () => {
-        if (!stage2Sent) {
-          stage2Sent = true;
-          await sendProgressUpdate(data.phoneNumber, 2, lang, config);
-        }
-      }, 30_000);
-    }
-
-    const result = await processImageNeverFail({
-      imageUrl: data.inputImageUrl,
-      style: data.style,
-      productCategory: data.productCategory,
-      voiceInstructions: data.voiceInstructions,
-      productProfile, // Pre-computed profile — undefined if analysis failed or single-image
-    });
-
-    // Cancel the stage 2 timer if pipeline finished before 15s
-    if (stage2Timer !== undefined) {
-      clearTimeout(stage2Timer);
-      stage2Sent = true; // Prevent the timer callback from firing if it already expired
-    }
-
-    log(`Pipeline complete`, {
-      tier: result.tier,
-      tierReason: result.tierReason,
-      pipeline: result.pipeline,
-      qaScore: result.qaScore,
-      durationMs: result.durationMs,
-    });
-
-    await job.updateProgress(80);
-
-    // Use pipeline output URL directly if it's already in Supabase storage
-    // (the pipeline uploads internally via uploadToStorage)
-    let outputUrl = result.outputUrl;
-    if (!outputUrl.includes('supabase.co')) {
-      // Only re-upload if it's a temporary URL (fal.ai, data URL, etc.)
-      const outputPath = `${data.orderId}/${data.imageJobId}-output.jpg`;
-      const outputBuffer = await fetch(outputUrl).then((r) => r.arrayBuffer());
-      outputUrl = await uploadFile(
-        Buckets.PROCESSED_IMAGES,
-        outputPath,
-        Buffer.from(outputBuffer),
-        'image/jpeg',
-      );
-    }
-
-    // Use cutout URL directly if already in Supabase, otherwise re-upload
-    let cutoutUrl: string | undefined;
-    if (result.cutoutUrl && result.cutoutUrl.startsWith('http')) {
-      if (result.cutoutUrl.includes('supabase.co')) {
-        cutoutUrl = result.cutoutUrl;
-      } else try {
-        const cutoutPath = `${data.orderId}/${data.imageJobId}-cutout.png`;
-        const cutoutBuffer = await fetch(result.cutoutUrl).then((r) => r.arrayBuffer());
-        cutoutUrl = await uploadFile(
-          Buckets.PROCESSED_IMAGES,
-          cutoutPath,
-          Buffer.from(cutoutBuffer),
-          'image/png',
-        );
-      } catch {
-        // Cutout upload is non-critical — continue without it
-        cutoutUrl = result.cutoutUrl;
-      }
-    }
-
-    // Handle story URL (9:16 format)
-    let storyUrl: string | undefined;
-    if (result.storyUrl) {
-      if (result.storyUrl.includes('supabase.co')) {
-        storyUrl = result.storyUrl;
-      } else try {
-        const storyPath = `${data.orderId}/${data.imageJobId}-story.jpg`;
-        const storyBuffer = await fetch(result.storyUrl).then((r) => r.arrayBuffer());
-        storyUrl = await uploadFile(Buckets.PROCESSED_IMAGES, storyPath, Buffer.from(storyBuffer), 'image/jpeg');
-      } catch {
-        storyUrl = result.storyUrl;
-      }
-    }
-
-    // Handle video URL (if Ken Burns was generated)
+    // Declare shared output variables — set by either the video path or the normal pipeline path.
+    // Intentionally uninitialized here; both branches always assign before use.
+    // eslint-disable-next-line prefer-const
+    let outputUrl!: string;
     let videoUrl: string | undefined;
-    if (result.videoUrl) {
-      if (result.videoUrl.includes('supabase.co')) {
-        videoUrl = result.videoUrl;
-      } else try {
-        const videoPath = `${data.orderId}/${data.imageJobId}-video.mp4`;
-        const videoBuffer = await fetch(result.videoUrl).then((r) => r.arrayBuffer());
-        videoUrl = await uploadFile(Buckets.PROCESSED_IMAGES, videoPath, Buffer.from(videoBuffer), 'video/mp4');
-      } catch {
-        videoUrl = result.videoUrl;
-      }
-    }
+    let storyUrl: string | undefined;
+    let cutoutUrl: string | undefined;
 
-    await job.updateProgress(90);
-
-    // Map pipeline string to Prisma enum — new never-fail tier names fall back to 'fallback'
-    const PIPELINE_ENUM_MAP: Record<string, string> = {
-      composite: 'composite',
-      bria: 'bria',
-      'bria-fallback': 'bria',
-      kontext: 'kontext',
-      segmentation: 'segmentation',
-      nano_banana: 'nano_banana',
-      primary: 'primary',
-      fallback: 'fallback',
-      'styled-studio': 'fallback',
-      'styled-studio-fallback': 'fallback',
-      'clean-studio': 'fallback',
-      'enhanced-original': 'fallback',
-      'raw-input': 'fallback',
-      'tier4-enhanced': 'fallback',
-    };
-    const pipelineEnum = (PIPELINE_ENUM_MAP[result.pipeline] ?? 'fallback') as any;
-
-    // Update job record
-    await prisma.imageJob.update({
-      where: { id: data.imageJobId },
-      data: {
-        status: 'completed',
-        outputImageUrl: outputUrl,
-        cutoutUrl,
-        qaScore: result.qaScore,
-        qaAttempts: result.attempts,
-        pipeline: pipelineEnum,
-        durationMs: result.durationMs,
-        completedAt: new Date(),
-      },
-    }).catch((err) => {
-      console.error(JSON.stringify({
-        event: 'db_update_failed',
-        error: err instanceof Error ? err.message : String(err),
-        context: 'imageJob_mark_completed',
+    // ── Video shoot routing ─────────────────────────────────────────────────
+    if (data.style === 'style_video_shoot') {
+      console.info(JSON.stringify({
+        event: 'video_shoot_start',
+        job: job.id,
+        orderId: data.orderId,
       }));
-    });
+
+      try {
+        const { generateMultiShotVideo } = await import('@whatsads/ai');
+
+        // Generate a hero ad image first — the video pipeline animates a
+        // finished styled image, NOT the raw product photo.
+        console.info(JSON.stringify({
+          event: 'video_shoot_hero_gen_start',
+          job: job.id,
+          orderId: data.orderId,
+        }));
+        const heroResult = await processImageNeverFail({
+          imageUrl: data.inputImageUrl,
+          style: 'style_clickkar_special',
+          productCategory: data.productCategory,
+          voiceInstructions: data.voiceInstructions,
+          productProfile,
+        });
+        console.info(JSON.stringify({
+          event: 'video_shoot_hero_gen_complete',
+          job: job.id,
+          orderId: data.orderId,
+          heroUrl: heroResult.outputUrl.slice(0, 80),
+          tier: heroResult.tier,
+          qaScore: heroResult.qaScore,
+        }));
+
+        const videoResult = await generateMultiShotVideo({
+          imageUrl: heroResult.outputUrl,
+          productCategory: data.productCategory,
+          productName: (productProfile as any)?.productName,
+          style: data.style,
+          lang: 'en',
+        });
+
+        // Upload video to Supabase processed-images bucket (VIDEOS bucket not yet provisioned)
+        // Retry up to 3 times — large MP4 files can hit transient network errors.
+        const videoPath = `${data.phoneNumber}/${data.orderId}_${data.imageJobId}_video.mp4`;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            videoUrl = await uploadFile(
+              Buckets.PROCESSED_IMAGES,
+              videoPath,
+              videoResult.videoBuffer,
+              'video/mp4',
+            );
+            break;
+          } catch (uploadErr) {
+            console.warn(JSON.stringify({
+              event: 'video_upload_retry',
+              attempt: attempt + 1,
+              error: uploadErr instanceof Error ? uploadErr.message : String(uploadErr),
+            }));
+            if (attempt < 2) await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
+          }
+        }
+        if (!videoUrl) {
+          console.error(JSON.stringify({ event: 'video_upload_all_retries_failed', orderId: data.orderId }));
+          // videoUrl stays undefined — delivery will fall through to the thumbnail-only path below
+        }
+
+        // Upload thumbnail (hero frame) as the still-image output
+        const thumbPath = `${data.orderId}/${data.imageJobId}-thumb.jpg`;
+        outputUrl = await uploadFile(
+          Buckets.PROCESSED_IMAGES,
+          thumbPath,
+          videoResult.thumbnailBuffer,
+          'image/jpeg',
+        );
+
+        // Update ImageJob
+        await prisma.imageJob.update({
+          where: { id: data.imageJobId },
+          data: {
+            status: 'completed',
+            outputImageUrl: outputUrl,
+            videoOutputUrl: videoUrl,
+            pipeline: 'video_multi_shot',
+            durationMs: videoResult.durationMs,
+            completedAt: new Date(),
+          },
+        }).catch((err) => {
+          console.error(JSON.stringify({
+            event: 'db_update_failed',
+            error: err instanceof Error ? err.message : String(err),
+            context: 'imageJob_mark_completed_video',
+          }));
+        });
+
+        console.info(JSON.stringify({
+          event: 'video_shoot_complete',
+          job: job.id,
+          orderId: data.orderId,
+          durationMs: videoResult.durationMs,
+          videoSizeMB: (videoResult.videoBuffer.length / 1024 / 1024).toFixed(2),
+        }));
+
+      } catch (videoErr) {
+        console.error(JSON.stringify({
+          event: 'video_shoot_failed',
+          job: job.id,
+          orderId: data.orderId,
+          error: videoErr instanceof Error ? videoErr.message : String(videoErr),
+        }));
+
+        // Fallback: run normal image pipeline with style_lifestyle
+        const fallbackResult = await processImageNeverFail({
+          imageUrl: data.inputImageUrl,
+          style: 'style_lifestyle',
+          productCategory: data.productCategory,
+          voiceInstructions: data.voiceInstructions,
+          productProfile,
+        });
+
+        outputUrl = fallbackResult.outputUrl;
+        if (!outputUrl.includes('supabase.co')) {
+          const outputPath = `${data.orderId}/${data.imageJobId}-output.jpg`;
+          const outputBuffer = await fetch(outputUrl).then((r) => r.arrayBuffer());
+          outputUrl = await uploadFile(
+            Buckets.PROCESSED_IMAGES,
+            outputPath,
+            Buffer.from(outputBuffer),
+            'image/jpeg',
+          );
+        }
+
+        await prisma.imageJob.update({
+          where: { id: data.imageJobId },
+          data: {
+            status: 'completed',
+            outputImageUrl: outputUrl,
+            pipeline: 'composite',
+            style: 'style_lifestyle', // Update style to match actual output so delivery labels are correct
+            durationMs: fallbackResult.durationMs,
+            completedAt: new Date(),
+          },
+        }).catch((err) => {
+          console.error(JSON.stringify({
+            event: 'db_update_failed',
+            error: err instanceof Error ? err.message : String(err),
+            context: 'imageJob_mark_completed_video_fallback',
+          }));
+        });
+      }
+
+    } else {
+      // ── Normal image pipeline ───────────────────────────────────────────────
+      log('Using Never-Fail pipeline');
+
+      // Progress update — sent after 30s delay, only for the first job
+      let stage2Sent = false;
+      let stage2Timer: ReturnType<typeof setTimeout> | undefined;
+      if (isFirstJob) {
+        stage2Timer = setTimeout(async () => {
+          if (!stage2Sent) {
+            stage2Sent = true;
+            await sendProgressUpdate(data.phoneNumber, 2, lang, config);
+          }
+        }, 30_000);
+      }
+
+      const result = await processImageNeverFail({
+        imageUrl: data.inputImageUrl,
+        style: data.style,
+        productCategory: data.productCategory,
+        voiceInstructions: data.voiceInstructions,
+        productProfile, // Pre-computed profile — undefined if analysis failed or single-image
+      });
+
+      // Cancel the stage 2 timer if pipeline finished before 15s
+      if (stage2Timer !== undefined) {
+        clearTimeout(stage2Timer);
+        stage2Sent = true; // Prevent the timer callback from firing if it already expired
+      }
+
+      log(`Pipeline complete`, {
+        tier: result.tier,
+        tierReason: result.tierReason,
+        pipeline: result.pipeline,
+        qaScore: result.qaScore,
+        durationMs: result.durationMs,
+      });
+
+      await job.updateProgress(80);
+
+      // Use pipeline output URL directly if it's already in Supabase storage
+      // (the pipeline uploads internally via uploadToStorage)
+      outputUrl = result.outputUrl;
+      if (!outputUrl.includes('supabase.co')) {
+        // Only re-upload if it's a temporary URL (fal.ai, data URL, etc.)
+        const outputPath = `${data.orderId}/${data.imageJobId}-output.jpg`;
+        const outputBuffer = await fetch(outputUrl).then((r) => r.arrayBuffer());
+        outputUrl = await uploadFile(
+          Buckets.PROCESSED_IMAGES,
+          outputPath,
+          Buffer.from(outputBuffer),
+          'image/jpeg',
+        );
+      }
+
+      // Use cutout URL directly if already in Supabase, otherwise re-upload
+      if (result.cutoutUrl && result.cutoutUrl.startsWith('http')) {
+        if (result.cutoutUrl.includes('supabase.co')) {
+          cutoutUrl = result.cutoutUrl;
+        } else try {
+          const cutoutPath = `${data.orderId}/${data.imageJobId}-cutout.png`;
+          const cutoutBuffer = await fetch(result.cutoutUrl).then((r) => r.arrayBuffer());
+          cutoutUrl = await uploadFile(
+            Buckets.PROCESSED_IMAGES,
+            cutoutPath,
+            Buffer.from(cutoutBuffer),
+            'image/png',
+          );
+        } catch {
+          // Cutout upload is non-critical — continue without it
+          cutoutUrl = result.cutoutUrl;
+        }
+      }
+
+      // Handle story URL (9:16 format)
+      if (result.storyUrl) {
+        if (result.storyUrl.includes('supabase.co')) {
+          storyUrl = result.storyUrl;
+        } else try {
+          const storyPath = `${data.orderId}/${data.imageJobId}-story.jpg`;
+          const storyBuffer = await fetch(result.storyUrl).then((r) => r.arrayBuffer());
+          storyUrl = await uploadFile(Buckets.PROCESSED_IMAGES, storyPath, Buffer.from(storyBuffer), 'image/jpeg');
+        } catch {
+          storyUrl = result.storyUrl;
+        }
+      }
+
+      // Handle video URL (if Ken Burns was generated)
+      if (result.videoUrl) {
+        if (result.videoUrl.includes('supabase.co')) {
+          videoUrl = result.videoUrl;
+        } else try {
+          const videoPath = `${data.orderId}/${data.imageJobId}-video.mp4`;
+          const videoBuffer = await fetch(result.videoUrl).then((r) => r.arrayBuffer());
+          videoUrl = await uploadFile(Buckets.PROCESSED_IMAGES, videoPath, Buffer.from(videoBuffer), 'video/mp4');
+        } catch {
+          videoUrl = result.videoUrl;
+        }
+      }
+
+      await job.updateProgress(90);
+
+      // Map pipeline string to Prisma enum — new never-fail tier names fall back to 'fallback'
+      const PIPELINE_ENUM_MAP: Record<string, string> = {
+        composite: 'composite',
+        bria: 'bria',
+        'bria-fallback': 'bria',
+        kontext: 'kontext',
+        segmentation: 'segmentation',
+        nano_banana: 'nano_banana',
+        primary: 'primary',
+        fallback: 'fallback',
+        'styled-studio': 'fallback',
+        'styled-studio-fallback': 'fallback',
+        'clean-studio': 'fallback',
+        'enhanced-original': 'fallback',
+        'raw-input': 'fallback',
+        'tier4-enhanced': 'fallback',
+      };
+      const pipelineEnum = (PIPELINE_ENUM_MAP[result.pipeline] ?? 'fallback') as any;
+
+      // Update job record
+      await prisma.imageJob.update({
+        where: { id: data.imageJobId },
+        data: {
+          status: 'completed',
+          outputImageUrl: outputUrl,
+          cutoutUrl,
+          qaScore: result.qaScore,
+          qaAttempts: result.attempts,
+          pipeline: pipelineEnum,
+          durationMs: result.durationMs,
+          completedAt: new Date(),
+        },
+      }).catch((err) => {
+        console.error(JSON.stringify({
+          event: 'db_update_failed',
+          error: err instanceof Error ? err.message : String(err),
+          context: 'imageJob_mark_completed',
+        }));
+      });
+    } // end of normal image pipeline branch
 
     // Update order — add output URL
     const order = await prisma.order.findUnique({ where: { id: data.orderId } });
@@ -299,7 +458,6 @@ export async function processImageJob(job: Job): Promise<void> {
         data: {
           outputImageUrls: { push: outputUrl },
           cutoutUrls: cutoutUrl ? { push: cutoutUrl } : undefined,
-          qaBestScore: result.qaScore > (order.qaBestScore ?? 0) ? result.qaScore : undefined,
         },
       });
 
@@ -318,20 +476,49 @@ export async function processImageJob(job: Job): Promise<void> {
         );
         const completedUrls = completedJobs.map((j: ImageJob) => j.outputImageUrl!);
 
-        // For multi-photo orders, use the current job's video/story (if available).
-        // ImageJob records do not store videoUrl/storyUrl fields, so reading them
-        // from other job rows always yields undefined. The last-completing job's
-        // local variables are the only reliable source.
-        const allVideoUrls = videoUrl ? [videoUrl] : [];
-        const allStoryUrls = storyUrl ? [storyUrl] : [];
-
-        // Build style labels aligned to completedJobs (sorted by styleIndex for consistency)
+        // Build style labels and separate video outputs from image outputs.
+        // video_multi_shot jobs store their MP4 URL in videoOutputUrl — collect them
+        // from the DB rows so all jobs (not just the last-completing one) are included.
         const sortedCompletedJobs = [...completedJobs].sort(
           (a: ImageJob, b: ImageJob) => (a.styleIndex ?? 0) - (b.styleIndex ?? 0),
         );
-        const sortedCompletedUrls = sortedCompletedJobs.map((j: ImageJob) => j.outputImageUrl!);
-        const styleLabels = sortedCompletedJobs
-          .map((j: ImageJob) => j.style ?? null)
+
+        // For video shoot jobs that produced an actual video (videoOutputUrl set),
+        // keep them separate — their thumbnail is still shown as a still preview
+        // and their MP4 is delivered via allVideoUrls. For video-shoot jobs that
+        // fell back to a static image (videoOutputUrl is null), treat them as
+        // normal image output jobs with the fallback style 'style_lifestyle' for
+        // labeling purposes so indices stay aligned.
+        const videoShootJobsWithVideo = sortedCompletedJobs.filter(
+          (j: ImageJob) => j.style === 'style_video_shoot' && !!(j as any).videoOutputUrl,
+        );
+        const imageOutputJobs = sortedCompletedJobs.filter(
+          (j: ImageJob) =>
+            j.style !== 'style_video_shoot' ||
+            !(j as any).videoOutputUrl,
+        );
+
+        // Video URLs: DB videoOutputUrl for video-shoot jobs + any Ken Burns videoUrl from the
+        // current normal-pipeline job (local variable — DB has no column for those)
+        const dbVideoUrls = videoShootJobsWithVideo
+          .map((j: ImageJob) => (j as any).videoOutputUrl as string | null)
+          .filter((u): u is string => !!u);
+        const allVideoUrls = dbVideoUrls.length > 0
+          ? dbVideoUrls
+          : videoUrl
+          ? [videoUrl]
+          : [];
+
+        const allStoryUrls = storyUrl ? [storyUrl] : [];
+
+        // Deliver thumbnails for video-shoot jobs alongside normal image outputs.
+        // sortedCompletedUrls and styleLabels are both derived from imageOutputJobs
+        // so their lengths always match (1:1 correspondence).
+        const sortedCompletedUrls = imageOutputJobs.map((j: ImageJob) => j.outputImageUrl!);
+        const styleLabels = imageOutputJobs
+          .map((j: ImageJob) =>
+            j.style === 'style_video_shoot' ? 'style_lifestyle' : (j.style ?? null),
+          )
           .filter((s): s is string => s !== null);
 
         // Optimistic lock: complete the order if it hasn't been completed yet
