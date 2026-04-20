@@ -6,12 +6,12 @@ import { join } from 'path';
 import { writeFile, readFile, unlink } from 'fs/promises';
 import { randomUUID } from 'crypto';
 
+import { getProviderKey } from '@autmn/keypool';
 import { downloadBuffer, uploadToStorage } from '../pipeline/fallback.js';
 import { generateVeoVideo } from './veo-video.js';
 
 function ensureFalConfig() {
-  const key = process.env['FAL_KEY'] ?? process.env['FAL_API_KEY'] ?? '';
-  fal.config({ credentials: key });
+  fal.config({ credentials: getProviderKey('fal') });
 }
 
 // ---------------------------------------------------------------------------

@@ -1,8 +1,8 @@
 import { fal } from '@fal-ai/client';
+import { getProviderKey } from '@autmn/keypool';
 
 function ensureFalConfig() {
-  const key = process.env['FAL_KEY'] ?? process.env['FAL_API_KEY'] ?? '';
-  fal.config({ credentials: key });
+  fal.config({ credentials: getProviderKey('fal') });
 }
 
 // ---------------------------------------------------------------------------

@@ -1,3 +1,5 @@
+import { getProviderKey } from '@autmn/keypool';
+
 /**
  * V4 pipeline — Unified multi-reference creative ad generation.
  *
@@ -216,9 +218,7 @@ export async function generateCreativeDirection(
   backgroundOnlyPrompt: string;
 }> {
   const { GoogleGenAI } = await import('@google/genai');
-  const genai = new GoogleGenAI({
-    apiKey: process.env['GOOGLE_AI_API_KEY'] ?? process.env['GOOGLE_GENAI_API_KEY'] ?? '',
-  });
+  const genai = new GoogleGenAI({ apiKey: getProviderKey('gemini') });
 
   const styleMandate = (() => {
     const mandates: Record<string, string> = {

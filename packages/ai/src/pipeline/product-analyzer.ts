@@ -1,4 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
+import { getProviderKey } from '@autmn/keypool';
 import { z } from 'zod';
 
 // ---------------------------------------------------------------------------
@@ -570,9 +571,7 @@ export async function analyzeAndPlan(
 ): Promise<AnalyzeAndPlanResult> {
   const startMs = Date.now();
 
-  const genai = new GoogleGenAI({
-    apiKey: process.env['GOOGLE_AI_API_KEY'] ?? process.env['GOOGLE_GENAI_API_KEY'] ?? '',
-  });
+  const genai = new GoogleGenAI({ apiKey: getProviderKey('gemini') });
 
   const base64Image = imageBuffer.toString('base64');
   const mimeType = detectMime(imageBuffer);
@@ -648,7 +647,7 @@ export async function generateAdPrompt(
   voiceInstructions?: string
 ): Promise<string> {
   // This is now handled inside analyzeAndPlan, but keep for backward compat
-  const genai = new GoogleGenAI({ apiKey: process.env['GOOGLE_AI_API_KEY'] ?? process.env['GOOGLE_GENAI_API_KEY'] ?? '' });
+  const genai = new GoogleGenAI({ apiKey: getProviderKey('gemini') });
   const sanitizedInstructions = voiceInstructions
     ? voiceInstructions
         .trim()

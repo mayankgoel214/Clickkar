@@ -1,4 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
+import { getProviderKey } from '@autmn/keypool';
 import { z } from 'zod';
 
 // ---------------------------------------------------------------------------
@@ -315,9 +316,7 @@ export async function unifiedQualityCheck(
 ): Promise<UnifiedQAResult> {
   const startMs = Date.now();
 
-  const genai = new GoogleGenAI({
-    apiKey: process.env['GOOGLE_AI_API_KEY'] ?? process.env['GOOGLE_GENAI_API_KEY'] ?? '',
-  });
+  const genai = new GoogleGenAI({ apiKey: getProviderKey('gemini') });
 
   const promptText = buildUnifiedPrompt(
     options.checkFidelity,

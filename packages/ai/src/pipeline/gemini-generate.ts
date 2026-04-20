@@ -1,4 +1,5 @@
 import { GoogleGenAI, Modality } from '@google/genai';
+import { getProviderKey } from '@autmn/keypool';
 import { geminiImageBreaker } from './circuit-breaker.js';
 
 // ---------------------------------------------------------------------------
@@ -32,11 +33,7 @@ export interface GeminiGenerateResult {
 // ---------------------------------------------------------------------------
 
 function getApiKey(): string {
-  const key = process.env['GOOGLE_AI_API_KEY'] ?? process.env['GOOGLE_GENAI_API_KEY'] ?? '';
-  if (!key) {
-    throw new Error('GOOGLE_AI_API_KEY environment variable is not set');
-  }
-  return key;
+  return getProviderKey('gemini');
 }
 
 function getGenAI(): GoogleGenAI {

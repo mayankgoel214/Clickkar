@@ -1,4 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
+import { getProviderKey } from '@autmn/keypool';
 import { z } from 'zod';
 import { analyzeAndPlanV3 } from './product-analyzer-v3.js';
 
@@ -385,9 +386,7 @@ export async function analyzeMultiAngleProduct(
   // -------------------------------------------------------------------
   // Multi-image path: send all images in one Gemini call
   // -------------------------------------------------------------------
-  const genai = new GoogleGenAI({
-    apiKey: process.env['GOOGLE_AI_API_KEY'] ?? process.env['GOOGLE_GENAI_API_KEY'] ?? '',
-  });
+  const genai = new GoogleGenAI({ apiKey: getProviderKey('gemini') });
 
   const prompt = buildMultiAnglePrompt(imageCount, voiceInstructions, styles);
 

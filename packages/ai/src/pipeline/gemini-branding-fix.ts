@@ -1,4 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
+import { getProviderKey } from '@autmn/keypool';
 import { geminiEditImage } from './gemini-generate.js';
 
 // ---------------------------------------------------------------------------
@@ -6,8 +7,7 @@ import { geminiEditImage } from './gemini-generate.js';
 // ---------------------------------------------------------------------------
 
 function getGenAI(): GoogleGenAI {
-  const apiKey = process.env['GOOGLE_AI_API_KEY'] ?? process.env['GOOGLE_GENAI_API_KEY'] ?? '';
-  return new GoogleGenAI({ apiKey });
+  return new GoogleGenAI({ apiKey: getProviderKey('gemini') });
 }
 
 function detectMime(buf: Buffer): string {

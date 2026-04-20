@@ -1,3 +1,4 @@
+import { getProviderKey } from '@autmn/keypool';
 import { z } from 'zod';
 
 // ---------------------------------------------------------------------------
@@ -77,11 +78,7 @@ export async function parsePerStyleInstructions(params: {
 
   try {
     const { GoogleGenAI } = await import('@google/genai');
-    const apiKey = process.env['GOOGLE_AI_API_KEY'] ?? process.env['GOOGLE_GENAI_API_KEY'] ?? '';
-    if (!apiKey) {
-      throw new Error('GOOGLE_AI_API_KEY is not set');
-    }
-    const ai = new GoogleGenAI({ apiKey });
+    const ai = new GoogleGenAI({ apiKey: getProviderKey('gemini') });
 
     const styleList = styles
       .map((s, i) => `${i + 1}. "${getStyleDisplayName(s)}" (id: ${s})`)

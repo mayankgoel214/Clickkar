@@ -5,6 +5,7 @@
  */
 
 import { GoogleGenAI } from '@google/genai';
+import { getProviderKey } from '@autmn/keypool';
 import { z } from 'zod';
 
 // ---------------------------------------------------------------------------
@@ -92,12 +93,7 @@ export async function lightAnalyze(buffers: Buffer[]): Promise<LightAnalysis> {
     throw new Error('lightAnalyze requires at least 1 buffer');
   }
 
-  const genai = new GoogleGenAI({
-    apiKey:
-      process.env['GOOGLE_AI_API_KEY'] ??
-      process.env['GOOGLE_GENAI_API_KEY'] ??
-      '',
-  });
+  const genai = new GoogleGenAI({ apiKey: getProviderKey('gemini') });
 
   const timeoutPromise = new Promise<never>((_, reject) =>
     setTimeout(
