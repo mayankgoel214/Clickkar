@@ -52,6 +52,39 @@ function isRateLimited(key: string): boolean {
   return timestamps.length > RATE_LIMIT_MAX;
 }
 
+// ---------------------------------------------------------------------------
+// Unsupported-type rejection dedupe
+//
+// In the 2026-04-20 prod run, a user uploading 3 photos saw 3 back-to-back
+// "📸 I can only process photos and text messages" rejections BEFORE the
+// "3 photos received ✅" confirmation. Meta was sending extra envelopes
+// (likely reaction/system/order/referral or media-metadata pre-messages)
+// alongside the image messages and each one classified as `unknown`.
+//
+// Dedupe only the user-facing text, not the log — we still want every
+// unknown envelope logged with its messageKeys so we can figure out what
+// Meta is actually sending.
+// ---------------------------------------------------------------------------
+
+const REJECTION_DEDUPE_WINDOW_MS = 10_000;
+const rejectionSentAt = new Map<string, number>();
+
+setInterval(() => {
+  const cutoff = Date.now() - REJECTION_DEDUPE_WINDOW_MS;
+  for (const [phone, ts] of rejectionSentAt) {
+    if (ts < cutoff) rejectionSentAt.delete(phone);
+  }
+  if (rejectionSentAt.size > 10_000) rejectionSentAt.clear();
+}, 60_000).unref();
+
+function shouldSendRejection(phoneNumber: string): boolean {
+  const now = Date.now();
+  const last = rejectionSentAt.get(phoneNumber) ?? 0;
+  if (now - last < REJECTION_DEDUPE_WINDOW_MS) return false;
+  rejectionSentAt.set(phoneNumber, now);
+  return true;
+}
+
 /**
  * Extract the sender's phone number from the raw webhook payload without
  * running the full extractMessage() logic. Returns null for status-only
@@ -168,11 +201,28 @@ export async function whatsappWebhookRoutes(app: FastifyInstance): Promise<void>
 
       // Unsupported message types (reactions, stickers, system messages, etc.) — tell the user
       if (!messageType || messageType === 'unknown') {
-        app.log.debug('Ignoring unsupported message type: %s', rawType);
-        // Don't leave the user hanging — tell them what we accept
-        try {
-          await wa.sendText(phoneNumber, '📸 I can only process photos and text messages. Please send a product photo to get started!');
-        } catch { /* best effort */ }
+        // Log the raw shape on EVERY unknown so we can reverse-engineer what
+        // Meta is sending. Deduping happens only for the user-facing text below.
+        // Known-expected keys stripped so messageKeys surfaces the weird ones.
+        const KNOWN_KEYS = new Set(['id', 'from', 'timestamp', 'type', 'context']);
+        const messageKeys = Object.keys(message as object).filter(k => !KNOWN_KEYS.has(k));
+        console.info(JSON.stringify({
+          event: 'webhook_unknown_type',
+          rawType,
+          messageType,
+          messageId: message.id,
+          from: phoneNumber,
+          messageKeys,
+        }));
+
+        // Don't leave the user hanging — tell them what we accept.
+        // Dedupe within a 10s window so a burst of 3 photos doesn't fire
+        // 3 back-to-back rejection messages (2026-04-20 bug).
+        if (shouldSendRejection(phoneNumber)) {
+          try {
+            await wa.sendText(phoneNumber, '📸 I can only process photos and text messages. Please send a product photo to get started!');
+          } catch { /* best effort */ }
+        }
         return;
       }
 
