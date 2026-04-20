@@ -1,4 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
+import { getProviderKey, hasKeyPool } from '@autmn/keypool';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -52,11 +53,11 @@ export async function generateVeoVideo(
 ): Promise<VeoVideoResult | null> {
   const startMs = Date.now();
 
-  const apiKey = process.env['GOOGLE_AI_API_KEY'] ?? process.env['GOOGLE_GENAI_API_KEY'] ?? '';
-  if (!apiKey) {
+  if (!hasKeyPool('gemini')) {
     console.error(JSON.stringify({ event: 'veo_video_no_api_key' }));
     return null;
   }
+  const apiKey = getProviderKey('gemini');
 
   const ai = new GoogleGenAI({ apiKey });
 

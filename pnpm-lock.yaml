@@ -126,6 +126,9 @@ importers:
 
   packages/ai:
     dependencies:
+      '@autmn/keypool':
+        specifier: workspace:*
+        version: link:../keypool
       '@autmn/storage':
         specifier: workspace:*
         version: link:../storage

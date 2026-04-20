@@ -1,4 +1,5 @@
 import { fal } from '@fal-ai/client';
+import { getProviderKey } from '@autmn/keypool';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -23,8 +24,7 @@ const PRODUCT_SHOT_MODEL = 'fal-ai/bria/product-shot';
 const TIMEOUT_MS = 120_000;
 
 function ensureFalConfig() {
-  const key = process.env['FAL_KEY'] ?? process.env['FAL_API_KEY'] ?? '';
-  fal.config({ credentials: key });
+  fal.config({ credentials: getProviderKey('fal') });
 }
 
 // Timeout wrapper

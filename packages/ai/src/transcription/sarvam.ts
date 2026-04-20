@@ -4,6 +4,8 @@
  * Accepts OGG/Opus directly (WhatsApp native format).
  */
 
+import { getProviderKey, hasKeyPool } from '@autmn/keypool';
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -37,10 +39,10 @@ export async function transcribeWithSarvam(
 ): Promise<SarvamTranscriptionResult> {
   const startMs = Date.now();
 
-  const apiKey = process.env['SARVAM_API_KEY'];
-  if (!apiKey) {
+  if (!hasKeyPool('sarvam')) {
     throw new Error('SARVAM_API_KEY environment variable not set');
   }
+  const apiKey = getProviderKey('sarvam');
 
   // Sarvam API expects multipart/form-data
   const formData = new FormData();

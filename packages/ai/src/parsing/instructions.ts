@@ -1,4 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
+import { getProviderKey } from '@autmn/keypool';
 import { z } from 'zod';
 import { INSTRUCTION_PARSER_PROMPT } from '../prompts/instruction-parser.js';
 
@@ -57,9 +58,7 @@ export async function parseEditInstructions(
     };
   }
 
-  const genai = new GoogleGenAI({
-    apiKey: process.env['GOOGLE_AI_API_KEY'] ?? process.env['GOOGLE_GENAI_API_KEY'] ?? '',
-  });
+  const genai = new GoogleGenAI({ apiKey: getProviderKey('gemini') });
 
   let editCommand: EditCommand;
 
