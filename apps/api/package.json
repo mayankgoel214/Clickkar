@@ -13,6 +13,7 @@
   "dependencies": {
     "@autmn/ai": "workspace:^",
     "@autmn/db": "workspace:*",
+    "@autmn/keypool": "workspace:*",
     "@autmn/payment": "workspace:*",
     "@autmn/queue": "workspace:*",
     "@autmn/session": "workspace:*",

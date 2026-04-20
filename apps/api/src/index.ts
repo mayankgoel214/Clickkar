@@ -10,6 +10,7 @@ import { registerRawBodyParser } from './middleware/raw-body.js';
 import { healthRoutes } from './routes/health.js';
 import { adminRoutes } from './routes/admin.js';
 import { adminTestRoutes } from './routes/admin/test.js';
+import { adminKeypoolRoutes } from './routes/admin/keypool.js';
 import { whatsappWebhookRoutes } from './routes/webhooks/whatsapp.js';
 import { razorpayWebhookRoutes } from './routes/webhooks/razorpay.js';
 import { registerBullBoard } from './plugins/bull-board.js';
@@ -42,6 +43,7 @@ async function main() {
   await app.register(healthRoutes);
   await app.register(adminRoutes);
   await app.register(adminTestRoutes);
+  await app.register(adminKeypoolRoutes);
   await app.register(whatsappWebhookRoutes);
   await app.register(razorpayWebhookRoutes);
 
