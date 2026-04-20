@@ -7,6 +7,8 @@
 // Returns null on any failure (never throws — non-fatal by design).
 // ---------------------------------------------------------------------------
 
+import { getProviderKey, hasKeyPool } from '@autmn/keypool';
+
 export interface LyriaMusicOptions {
   /** Free-text description of the music to generate. */
   prompt: string;
@@ -61,11 +63,11 @@ export async function generateLyriaMusic(
 ): Promise<LyriaMusicResult | null> {
   const startMs = Date.now();
 
-  const apiKey = process.env['GOOGLE_AI_API_KEY'] ?? process.env['GOOGLE_GENAI_API_KEY'] ?? '';
-  if (!apiKey) {
+  if (!hasKeyPool('gemini')) {
     console.error(JSON.stringify({ event: 'lyria_music_no_api_key' }));
     return null;
   }
+  const apiKey = getProviderKey('gemini');
 
   const durationSeconds = options.durationSeconds ?? 20;
 

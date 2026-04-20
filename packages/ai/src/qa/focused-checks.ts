@@ -1,4 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
+import { getProviderKey } from '@autmn/keypool';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -30,8 +31,7 @@ const TIMEOUT_MS = 15_000;
 // ---------------------------------------------------------------------------
 
 function getClient(): GoogleGenAI {
-  const key = process.env.GOOGLE_AI_API_KEY ?? process.env.GOOGLE_GENAI_API_KEY;
-  if (!key) throw new Error('Missing GOOGLE_AI_API_KEY');
+  const key = getProviderKey('gemini');
   return new GoogleGenAI({ apiKey: key });
 }
 

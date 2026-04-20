@@ -1,3 +1,4 @@
+import { getProviderKey } from '@autmn/keypool';
 import { preprocessImage } from './preprocess.js';
 import { analyzeAndPlan, type AnalyzeAndPlanResult } from './product-analyzer.js';
 import { createStudioShot, inpaintStudioBackground, generateReferenceScene, postProcessFinal, addAILabel, refineWithKontext, fixProductBranding, restoreFaces, upscaleDownscale, uploadToStorage, downloadBuffer, recompositeProduct, harmonizeLighting } from './fallback.js';
@@ -390,8 +391,7 @@ export async function processProductImage(
   try {
     console.info(JSON.stringify({ event: 'fallback_bria_start' }));
     const { fal } = await import('@fal-ai/client');
-    const key = process.env['FAL_KEY'] ?? process.env['FAL_API_KEY'] ?? '';
-    fal.config({ credentials: key });
+    fal.config({ credentials: getProviderKey('fal') });
 
     const briaResult = (await fal.subscribe('fal-ai/bria/product-shot' as string, {
       input: {

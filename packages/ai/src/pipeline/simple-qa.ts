@@ -5,6 +5,7 @@
  */
 
 import { GoogleGenAI } from '@google/genai';
+import { getProviderKey } from '@autmn/keypool';
 import { z } from 'zod';
 
 // ---------------------------------------------------------------------------
@@ -43,12 +44,7 @@ export async function simpleQA(
   originalBuffer: Buffer,
   generatedBuffer: Buffer,
 ): Promise<SimpleQAResult> {
-  const genai = new GoogleGenAI({
-    apiKey:
-      process.env['GOOGLE_AI_API_KEY'] ??
-      process.env['GOOGLE_GENAI_API_KEY'] ??
-      '',
-  });
+  const genai = new GoogleGenAI({ apiKey: getProviderKey('gemini') });
 
   const origB64 = originalBuffer.toString('base64');
   const genB64 = generatedBuffer.toString('base64');

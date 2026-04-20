@@ -1,4 +1,5 @@
 import Groq from 'groq-sdk';
+import { getProviderKey } from '@autmn/keypool';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -49,9 +50,7 @@ export async function transcribeWithGroq(
 ): Promise<GroqTranscriptionResult> {
   const startMs = Date.now();
 
-  const client = new Groq({
-    apiKey: process.env['GROQ_API_KEY']!,
-  });
+  const client = new Groq({ apiKey: getProviderKey('groq') });
 
   // Default to ogg if not specified (WhatsApp default)
   const resolvedMime =

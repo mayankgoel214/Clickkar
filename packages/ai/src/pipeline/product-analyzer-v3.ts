@@ -1,4 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
+import { getProviderKey } from '@autmn/keypool';
 import { z } from 'zod';
 
 // Re-export the base types from V2 for shared schema fields
@@ -817,9 +818,7 @@ export async function analyzeAndPlanV3(
 ): Promise<AnalyzeAndPlanV3Result> {
   const startMs = Date.now();
 
-  const genai = new GoogleGenAI({
-    apiKey: process.env['GOOGLE_AI_API_KEY'] ?? process.env['GOOGLE_GENAI_API_KEY'] ?? '',
-  });
+  const genai = new GoogleGenAI({ apiKey: getProviderKey('gemini') });
 
   const base64Image = imageBuffer.toString('base64');
   const mimeType = detectMime(imageBuffer);

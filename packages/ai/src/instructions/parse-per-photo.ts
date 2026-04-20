@@ -1,3 +1,4 @@
+import { getProviderKey } from '@autmn/keypool';
 import { z } from 'zod';
 
 const InstructionParseResultSchema = z.object({
@@ -23,11 +24,7 @@ export async function parsePerPhotoInstructions(params: {
   const { imageUrls, rawInstructions } = params;
 
   const { GoogleGenAI } = await import('@google/genai');
-  const apiKey = process.env['GOOGLE_AI_API_KEY'] ?? process.env['GOOGLE_GENAI_API_KEY'] ?? '';
-  if (!apiKey) {
-    throw new Error('GOOGLE_AI_API_KEY is not set');
-  }
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = new GoogleGenAI({ apiKey: getProviderKey('gemini') });
 
   // Download and create thumbnails (256px) for each photo
   const sharp = (await import('sharp')).default;
