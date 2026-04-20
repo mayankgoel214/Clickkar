@@ -1,0 +1,7 @@
+product,style,instructionCase,runNumber,timestamp,qaScore,tier,pipeline,durationMs,outputLocalPath,outputUrl,productName,productCategory,itemCount,setDescription,analyzerFellBack,error,errorAttempts
+diet-coke,style_clean_white,no-instruction,1,2026-04-18T03:51:10.251Z,,,,,,,,,,,,"Admin API returned 500: {""error"":""Failed to upload photo to storage"",""code"":""STORAGE_UPLOAD_FAILED""}",2
+kundan-polki,style_clean_white,no-instruction,1,2026-04-18T03:51:10.252Z,,,,,,,,,,,,"Admin API returned 500: {""error"":""Failed to upload photo to storage"",""code"":""STORAGE_UPLOAD_FAILED""}",2
+kundan-polki,style_with_model,no-instruction,1,2026-04-18T03:51:10.252Z,,,,,,,,,,,,"Admin API returned 500: {""error"":""Failed to upload photo to storage"",""code"":""STORAGE_UPLOAD_FAILED""}",2
+diet-coke,style_with_model,no-instruction,1,2026-04-18T03:51:10.251Z,,,,,,,,,,,,"Admin API returned 500: {""error"":""Failed to upload photo to storage"",""code"":""STORAGE_UPLOAD_FAILED""}",2
+diet-coke,style_autmn_special,no-instruction,1,2026-04-18T03:51:10.251Z,,,,,,,,,,,,"Admin API returned 500: {""error"":""Failed to upload photo to storage"",""code"":""STORAGE_UPLOAD_FAILED""}",2
+kundan-polki,style_autmn_special,no-instruction,1,2026-04-18T03:51:10.252Z,,,,,,,,,,,,"Admin API returned 500: {""error"":""Failed to upload photo to storage"",""code"":""STORAGE_UPLOAD_FAILED""}",2

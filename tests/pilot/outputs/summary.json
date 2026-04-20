@@ -1,0 +1,104 @@
+{
+  "runs": [
+    {
+      "product": "diet-coke",
+      "analysis": {
+        "productName": "Assorted Coca-Cola soft drink cans",
+        "productCategory": "food",
+        "hasBranding": true,
+        "physicalSize": "small",
+        "dominantColors": ["silver", "red", "black"],
+        "typicalSetting": "table",
+        "usable": true,
+        "itemCount": 3,
+        "items": ["Coca-Cola Zero Sugar can", "Coca-Cola Original Taste can", "Diet Coke can"],
+        "setDescription": "Coca-Cola soft drink can assortment"
+      },
+      "results": [
+        {
+          "style": "style_clean_white",
+          "outputFile": "/Users/lending/Autmn/tests/pilot/outputs/diet-coke-clean_white.jpg",
+          "outputUrl": "https://yptkybppxjhnrzwlfbni.supabase.co/storage/v1/object/public/processed-images/output_v5_1776471460481.jpg",
+          "prompt": "A professional product advertisement for this complete Coca-Cola soft drink can assortment consisting of Coca-Cola Zero Sugar can, Coca-Cola Original Taste can, Diet Coke can — all pieces shown together as a coherent set on a clean white studio background. A clean white studio has bright even lighting, a seamless white backdrop, and minimal elements — the product is shown clearly and attractively. Think about how to position, angle, and light this specific product to look its absolute best in a white studio setting. Create the best advertisement for this particular product, making sure the ad is relevant to this specific product. Display the product using the conventional professional presentation method for this product type (for example: jewelry on a velvet bust or tray, garments on a mannequin or hanger, watches on a display stand, shoes paired on a stand, skincare bottles standing and grouped, beverage cans and bottles standing upright). The product is presented from its most recognizable angle with the brand label, logo, or front-facing side clearly visible to the camera, framed as it would appear in a professional advertisement. The product itself must appear clean, intact, and professionally presented. Any creative interpretation applies to the setting, lighting, and composition around the product — not to the product itself. The only text visible in the image is the text already printed on the product itself. Square 1:1.",
+          "qaScore": 75,
+          "durationMs": 28504,
+          "tier": 1,
+          "pipeline": "primary",
+          "error": null
+        },
+        {
+          "style": "style_with_model",
+          "outputFile": "/Users/lending/Autmn/tests/pilot/outputs/diet-coke-with_model.jpg",
+          "outputUrl": "https://yptkybppxjhnrzwlfbni.supabase.co/storage/v1/object/public/processed-images/output_v5_1776471458549.jpg",
+          "prompt": "A professional lifestyle product advertisement featuring a person naturally using, wearing, or interacting with this complete Coca-Cola soft drink can assortment consisting of Coca-Cola Zero Sugar can, Coca-Cola Original Taste can, Diet Coke can — all pieces shown together as a coherent set. The product remains clearly visible as the focus of the shot. Think about how a real person would authentically use this product and capture that moment. Create the best advertisement for this particular product, making sure the ad is relevant to this specific product. The only text visible in the image is the text already printed on the product itself. Square 1:1.",
+          "qaScore": 75,
+          "durationMs": 27260,
+          "tier": 1,
+          "pipeline": "primary",
+          "error": null
+        },
+        {
+          "style": "style_autmn_special",
+          "outputFile": "/Users/lending/Autmn/tests/pilot/outputs/diet-coke-autmn_special.jpg",
+          "outputUrl": "https://yptkybppxjhnrzwlfbni.supabase.co/storage/v1/object/public/processed-images/output_v5_1776471458677.jpg",
+          "prompt": "Create a genuinely unexpected, striking creative advertisement for this complete Coca-Cola soft drink can assortment consisting of Coca-Cola Zero Sugar can, Coca-Cola Original Taste can, Diet Coke can — all pieces shown together as a coherent set. The style doesn't matter here — only the product does. Think about the most creative and memorable way to represent this specific product, whatever form that takes. The creative direction should feel authentically connected to what this product is, does, or culturally represents — unexpected but rooted in the product's real identity, not thematically random. Push for real setting, narrative, and unexpected composition. The product appears exactly as it is. Create the best advertisement for this particular product, making sure the ad is relevant to this specific product. Display the product using the conventional professional presentation method for this product type (for example: jewelry on a velvet bust or tray, garments on a mannequin or hanger, watches on a display stand, shoes paired on a stand, skincare bottles standing and grouped, beverage cans and bottles standing upright). The product is presented from its most recognizable angle with the brand label, logo, or front-facing side clearly visible to the camera, framed as it would appear in a professional advertisement. The product itself must appear clean, intact, and professionally presented. Any creative interpretation applies to the setting, lighting, and composition around the product — not to the product itself. The only text visible in the image is the text already printed on the product itself. Square 1:1.",
+          "qaScore": 75,
+          "durationMs": 27833,
+          "tier": 1,
+          "pipeline": "primary",
+          "error": null
+        }
+      ]
+    },
+    {
+      "product": "kundan-polki",
+      "analysis": {
+        "productName": "product",
+        "productCategory": "other",
+        "hasBranding": true,
+        "physicalSize": "medium",
+        "dominantColors": ["neutral"],
+        "typicalSetting": "tabletop",
+        "usable": true,
+        "itemCount": 1,
+        "items": ["product"],
+        "setDescription": null
+      },
+      "results": [
+        {
+          "style": "style_clean_white",
+          "outputFile": "/Users/lending/Autmn/tests/pilot/outputs/kundan-polki-clean_white.jpg",
+          "outputUrl": "https://yptkybppxjhnrzwlfbni.supabase.co/storage/v1/object/public/processed-images/output_v5_1776471512208.jpg",
+          "prompt": "A professional product advertisement for this product on a clean white studio background. A clean white studio has bright even lighting, a seamless white backdrop, and minimal elements — the product is shown clearly and attractively. Think about how to position, angle, and light this specific product to look its absolute best in a white studio setting. Create the best advertisement for this particular product, making sure the ad is relevant to this specific product. Display the product using the conventional professional presentation method for this product type (for example: jewelry on a velvet bust or tray, garments on a mannequin or hanger, watches on a display stand, shoes paired on a stand, skincare bottles standing and grouped, beverage cans and bottles standing upright). The product is presented from its most recognizable angle with the brand label, logo, or front-facing side clearly visible to the camera, framed as it would appear in a professional advertisement. The product itself must appear clean, intact, and professionally presented. Any creative interpretation applies to the setting, lighting, and composition around the product — not to the product itself. The only text visible in the image is the text already printed on the product itself. Square 1:1.",
+          "qaScore": 75,
+          "durationMs": 32373,
+          "tier": 1,
+          "pipeline": "primary",
+          "error": null
+        },
+        {
+          "style": "style_with_model",
+          "outputFile": "/Users/lending/Autmn/tests/pilot/outputs/kundan-polki-with_model.jpg",
+          "outputUrl": "https://yptkybppxjhnrzwlfbni.supabase.co/storage/v1/object/public/processed-images/output_v5_1776471512698.jpg",
+          "prompt": "A professional lifestyle product advertisement featuring a person naturally using, wearing, or interacting with this product. The product remains clearly visible as the focus of the shot. Think about how a real person would authentically use this product and capture that moment. Create the best advertisement for this particular product, making sure the ad is relevant to this specific product. The only text visible in the image is the text already printed on the product itself. Square 1:1.",
+          "qaScore": 75,
+          "durationMs": 32286,
+          "tier": 1,
+          "pipeline": "primary",
+          "error": null
+        },
+        {
+          "style": "style_autmn_special",
+          "outputFile": "/Users/lending/Autmn/tests/pilot/outputs/kundan-polki-autmn_special.jpg",
+          "outputUrl": "https://yptkybppxjhnrzwlfbni.supabase.co/storage/v1/object/public/processed-images/output_v5_1776471510870.jpg",
+          "prompt": "Create a genuinely unexpected, striking creative advertisement for this product. The style doesn't matter here — only the product does. Think about the most creative and memorable way to represent this specific product, whatever form that takes. The creative direction should feel authentically connected to what this product is, does, or culturally represents — unexpected but rooted in the product's real identity, not thematically random. Push for real setting, narrative, and unexpected composition. The product appears exactly as it is. Create the best advertisement for this particular product, making sure the ad is relevant to this specific product. Display the product using the conventional professional presentation method for this product type (for example: jewelry on a velvet bust or tray, garments on a mannequin or hanger, watches on a display stand, shoes paired on a stand, skincare bottles standing and grouped, beverage cans and bottles standing upright). The product is presented from its most recognizable angle with the brand label, logo, or front-facing side clearly visible to the camera, framed as it would appear in a professional advertisement. The product itself must appear clean, intact, and professionally presented. Any creative interpretation applies to the setting, lighting, and composition around the product — not to the product itself. The only text visible in the image is the text already printed on the product itself. Square 1:1.",
+          "qaScore": 75,
+          "durationMs": 31192,
+          "tier": 1,
+          "pipeline": "primary",
+          "error": null
+        }
+      ]
+    }
+  ]
+}
