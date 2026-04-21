@@ -85,18 +85,25 @@ export function getStylePromptV5(
     ? ''
     : ' Display the product using the conventional professional presentation method for this product type (for example: jewelry on a velvet bust or tray, garments on a mannequin or hanger, watches on a display stand, shoes paired on a stand, skincare bottles standing and grouped, beverage cans and bottles standing upright). The product is presented from its most recognizable angle with the brand label, logo, or front-facing side clearly visible to the camera, framed as it would appear in a professional advertisement. The product itself must appear clean, intact, and professionally presented. Any creative interpretation applies to the setting, lighting, and composition around the product — not to the product itself.';
 
+  // Identity preservation anchor — Phase 1 (2026-04-20).
+  // Proven pattern from Google DeepMind's prompting guide for Gemini 3 Pro Image:
+  // explicit "exactly the same as Image 1" language anchors product fidelity more
+  // reliably than atmospheric vocabulary or generic "product is preserved" clauses.
+  // Placed near the end of the prompt for strong recency effect.
+  const preservationAnchor = ' Preservation: the product shown must be exactly the same as reference image 1 — same colors, same logo position, same material finish, same proportions, same physical details. Any creative interpretation applies to the scene around the product, never to the product itself.';
+
   if (userInstructions?.trim()) {
     // Customer instruction present — trust the customer to drive decisions.
     // Display hint still included: professional default. Customer note comes
     // AFTER the hint, so any specific display instructions they gave will win.
     const note = userInstructions.trim();
     const styleName = getStyleDisplayName(style);
-    return `You are generating the "${styleName}" style. ${scene}${displayHint} Customer note: "${note}". Apply the parts of this note relevant to the "${styleName}" style. Square 1:1.`;
+    return `You are generating the "${styleName}" style. ${scene}${displayHint} Customer note: "${note}". Apply the parts of this note relevant to the "${styleName}" style.${preservationAnchor} Square 1:1.`;
   }
 
   // No customer instruction — scope text to the product's own branding only.
   // Positive framing: tell Gemini what text SHOULD be there, not what shouldn't.
-  return `${scene}${displayHint} The only text visible in the image is the text already printed on the product itself. Square 1:1.`;
+  return `${scene}${displayHint} The only text visible in the image is the text already printed on the product itself.${preservationAnchor} Square 1:1.`;
 }
 
 function getSceneDescription(style: string, analysis: LightAnalysis): string {

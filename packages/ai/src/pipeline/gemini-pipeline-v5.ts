@@ -553,8 +553,12 @@ export async function processProductImageV5(
 
     try {
       // COMPOSITE track is disabled — always run DIRECT.
-      // attempt 1 uses 2 parallel temps, retry uses single call
-      const temperatures = isRetry ? [0.5] : [0.5, 0.7];
+      // attempt 1 uses 2 parallel temps, retry uses single call.
+      // Phase 1 (2026-04-20): lowered from [0.5, 0.7] / [0.5] to [0.3, 0.4] / [0.3]
+      // per Gemini 3 Pro best-practice research — lower temp = higher product fidelity,
+      // tighter inter-generation consistency. Still two candidates for multi-run selection
+      // since Pro has no seed parameter.
+      const temperatures = isRetry ? [0.3] : [0.3, 0.4];
       const selection = await runDirectTrack(
         croppedBuffer,
         style,

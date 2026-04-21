@@ -11,8 +11,9 @@ export interface GeminiGenerateParams {
   prompt: string;
   aspectRatio?: string;  // default '1:1'
   temperature?: number;  // default 1.0 for generation
-  /** Optional reference images (up to 2). Passed alongside the primary product photo
-   *  to give the model additional angles/details for multi-angle orders. */
+  /** Optional reference images (up to 5). Passed alongside the primary product photo
+   *  to give the model additional angles/details for multi-angle orders.
+   *  Gemini 3 Pro Image supports up to 6 distinct objects (primary + 5 refs). */
   referenceImageBuffers?: Buffer[];
 }
 
@@ -105,9 +106,11 @@ export async function geminiGenerateImage(
       },
     });
 
-    // Reference images (Image 2, Image 3 — up to 2)
+    // Reference images (Image 2..6 — up to 5 additional).
+    // Gemini 3 Pro Image supports 6 distinct objects in one call (primary + 5 refs).
+    // Phase 1 (2026-04-20): lifted cap from 2 to 5 per Google's multi-reference guidance.
     if (referenceImageBuffers && referenceImageBuffers.length > 0) {
-      const refs = referenceImageBuffers.slice(0, 2);
+      const refs = referenceImageBuffers.slice(0, 5);
       for (const refBuf of refs) {
         parts.push({
           inlineData: {
