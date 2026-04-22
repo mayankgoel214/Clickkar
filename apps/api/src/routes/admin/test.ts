@@ -2,9 +2,12 @@
  * Admin Test UI — mirrors the WhatsApp customer experience for rapid pipeline testing.
  *
  * GET  /admin/test         → HTML page (style picker + photo upload + results)
- * POST /admin/test/generate → multipart endpoint; runs 3 parallel style generations
+ * POST /admin/test/generate → multipart endpoint; runs image or video generation
  *
  * Auth: query param ?key=<ADMIN_SECRET> (skipped when ADMIN_SECRET === 'placeholder' in dev)
+ *
+ * Video beta: set mediaType=video in the form to invoke Seedance 2.0 instead of the
+ * image pipeline. Single style per video run (cost-conscious).
  */
 
 import { timingSafeEqual } from 'crypto';
@@ -13,9 +16,11 @@ import multipart from '@fastify/multipart';
 import { z } from 'zod';
 import { getConfig } from '../../config.js';
 import { uploadFile } from '@autmn/storage';
+import { Buckets } from '@autmn/storage';
 import { lightAnalyze } from '@autmn/ai';
 import { processImageNeverFail } from '@autmn/ai';
 import { getStylePromptV5 } from '@autmn/ai';
+import { generateProductVideo, getVideoPrompt, VIDEO_STYLES } from '@autmn/ai';
 
 // ---------------------------------------------------------------------------
 // Auth helper
@@ -57,7 +62,7 @@ function checkAuth(req: FastifyRequest, reply: FastifyReply): boolean {
 // ---------------------------------------------------------------------------
 
 const STYLES = [
-  { id: 'style_autmn_special', label: 'Autmn Special ✨' },
+  { id: 'style_autmn_special', label: 'Autmn Special' },
   { id: 'style_clean_white',   label: 'Clean White Background' },
   { id: 'style_lifestyle',     label: 'Lifestyle Setting' },
   { id: 'style_gradient',      label: 'Dark Luxury' },
@@ -73,6 +78,7 @@ const STYLES = [
 // ---------------------------------------------------------------------------
 
 const STYLES_JSON = JSON.stringify(STYLES);
+const VIDEO_STYLES_JSON = JSON.stringify(VIDEO_STYLES);
 
 function buildHtml(adminKey: string): string {
   return `<!DOCTYPE html>
@@ -90,9 +96,12 @@ function buildHtml(adminKey: string): string {
     .style-btn.selected { border-color: #6366f1; background-color: #eef2ff; }
     .style-btn.selected .style-check { display: inline; }
     .style-btn .style-check { display: none; }
+    .media-tab { transition: all 0.15s; cursor: pointer; }
+    .media-tab.active { border-color: #6366f1; background-color: #eef2ff; color: #4338ca; font-weight: 600; }
     pre { white-space: pre-wrap; word-break: break-word; }
     .result-card { animation: fadeIn 0.3s ease-in; }
     @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+    video { background: #000; }
   </style>
 </head>
 <body class="bg-gray-50 min-h-screen">
@@ -101,7 +110,20 @@ function buildHtml(adminKey: string): string {
   <!-- Header -->
   <div class="mb-8">
     <h1 class="text-2xl font-bold text-gray-900">Autmn Pipeline Tester</h1>
-    <p class="text-sm text-gray-500 mt-1">Upload 1–5 photos, pick exactly 3 styles, run the AI pipeline. Mirrors the WhatsApp flow.</p>
+    <p class="text-sm text-gray-500 mt-1">Upload 1–5 photos, configure generation, run the AI pipeline. Mirrors the WhatsApp flow.</p>
+  </div>
+
+  <!-- Media type toggle -->
+  <div class="bg-white rounded-xl border border-gray-200 p-4 mb-5 shadow-sm">
+    <p class="text-sm font-medium text-gray-600 mb-3">Generation Type</p>
+    <div class="flex gap-3">
+      <button type="button" id="tab-image" class="media-tab active flex-1 border-2 border-gray-200 rounded-lg px-4 py-3 text-center text-sm" onclick="setMediaType('image')">
+        Image &mdash; 3 ad styles in parallel
+      </button>
+      <button type="button" id="tab-video" class="media-tab flex-1 border-2 border-gray-200 rounded-lg px-4 py-3 text-center text-sm" onclick="setMediaType('video')">
+        Video Beta &mdash; Seedance 2.0
+      </button>
+    </div>
   </div>
 
   <!-- Step 1: Upload Photos -->
@@ -122,11 +144,66 @@ function buildHtml(adminKey: string): string {
     <p id="photo-count-msg" class="text-sm text-gray-500 mt-2 hidden"></p>
   </div>
 
-  <!-- Step 2: Pick 3 Styles -->
-  <div class="bg-white rounded-xl border border-gray-200 p-6 mb-5 shadow-sm">
+  <!-- Step 2: IMAGE — Pick 3 Styles -->
+  <div id="image-style-section" class="bg-white rounded-xl border border-gray-200 p-6 mb-5 shadow-sm">
     <h2 class="font-semibold text-gray-800 mb-1">2. Pick Exactly 3 Styles</h2>
     <p id="style-count-label" class="text-sm text-gray-400 mb-4">0/3 selected</p>
     <div class="grid grid-cols-2 sm:grid-cols-3 gap-3" id="style-grid"></div>
+  </div>
+
+  <!-- Step 2: VIDEO — Video Options -->
+  <div id="video-style-section" class="bg-white rounded-xl border border-gray-200 p-6 mb-5 shadow-sm hidden">
+    <h2 class="font-semibold text-gray-800 mb-4">2. Video Options</h2>
+
+    <!-- Video style picker -->
+    <div class="mb-4">
+      <label class="block text-sm font-medium text-gray-700 mb-2">Style</label>
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-3" id="video-style-grid"></div>
+    </div>
+
+    <!-- Duration slider -->
+    <div class="mb-4">
+      <label class="block text-sm font-medium text-gray-700 mb-1">Duration: <span id="duration-label">5s</span></label>
+      <input type="range" id="duration-slider" min="5" max="10" step="1" value="5"
+        class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+        oninput="document.getElementById('duration-label').textContent = this.value + 's'" />
+      <div class="flex justify-between text-xs text-gray-400 mt-1"><span>5s</span><span>8s</span><span>10s</span></div>
+    </div>
+
+    <!-- Aspect ratio -->
+    <div class="mb-4">
+      <label class="block text-sm font-medium text-gray-700 mb-2">Aspect Ratio</label>
+      <div class="flex gap-3">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="radio" name="aspectRatio" value="9:16" checked class="accent-indigo-600" /> <span class="text-sm">9:16 Vertical (Reels)</span>
+        </label>
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="radio" name="aspectRatio" value="1:1" class="accent-indigo-600" /> <span class="text-sm">1:1 Square</span>
+        </label>
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="radio" name="aspectRatio" value="16:9" class="accent-indigo-600" /> <span class="text-sm">16:9 Landscape</span>
+        </label>
+      </div>
+    </div>
+
+    <!-- Voiceover (UGC only) -->
+    <div id="voiceover-section" class="hidden">
+      <div class="mb-3">
+        <label class="block text-sm font-medium text-gray-700 mb-1">Voiceover Text <span class="text-gray-400 font-normal">(leave blank for auto-generated Hinglish)</span></label>
+        <textarea id="voiceover-text" rows="2"
+          placeholder='e.g. "Yaar ye try karo, genuinely kaafi acha hai!"'
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-300"
+        ></textarea>
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Language</label>
+        <select id="voiceover-lang" class="border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-300">
+          <option value="hinglish" selected>Hinglish (default)</option>
+          <option value="hi">Hindi</option>
+          <option value="en">English</option>
+        </select>
+      </div>
+    </div>
   </div>
 
   <!-- Step 3: Instructions -->
@@ -146,14 +223,14 @@ function buildHtml(adminKey: string): string {
     disabled
     class="w-full py-3 px-6 rounded-xl font-semibold text-white bg-indigo-600 disabled:bg-gray-300 disabled:cursor-not-allowed hover:bg-indigo-700 transition"
   >
-    Start — Generate 3 Ads
+    Generate 3 Images
   </button>
 
   <!-- Progress -->
   <div id="progress-area" class="hidden mt-8 bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
     <div class="flex items-center gap-3">
       <div class="w-5 h-5 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
-      <span class="text-gray-700 font-medium" id="progress-text">📷 Photo mil gayi! 3 ads bana rahe hain...</span>
+      <span class="text-gray-700 font-medium" id="progress-text">Processing...</span>
     </div>
     <!-- Analysis block -->
     <div id="analysis-block" class="hidden mt-5 border-t border-gray-100 pt-4">
@@ -165,7 +242,7 @@ function buildHtml(adminKey: string): string {
   <!-- Results -->
   <div id="results-area" class="hidden mt-8">
     <h2 class="text-lg font-semibold text-gray-800 mb-4">Results</h2>
-    <div class="grid grid-cols-1 sm:grid-cols-3 gap-5" id="results-grid"></div>
+    <div id="results-grid" class="grid grid-cols-1 sm:grid-cols-3 gap-5"></div>
     <button
       id="again-btn"
       class="mt-6 w-full py-3 px-6 rounded-xl font-semibold text-white bg-gray-700 hover:bg-gray-800 transition"
@@ -180,10 +257,37 @@ function buildHtml(adminKey: string): string {
 
 <script>
 const ADMIN_KEY = ${JSON.stringify(adminKey)};
-const STYLES = ${STYLES_JSON};
+const IMAGE_STYLES = ${STYLES_JSON};
+const VIDEO_STYLES_DATA = ${VIDEO_STYLES_JSON};
 
 let selectedFiles = [];
-let selectedStyles = [];
+let selectedStyles = [];       // image mode
+let selectedVideoStyle = null; // video mode
+let currentMediaType = 'image';
+
+// ── Media type toggle ──────────────────────────────────────────────────────
+
+function setMediaType(type) {
+  currentMediaType = type;
+  const isVideo = type === 'video';
+
+  document.getElementById('tab-image').classList.toggle('active', !isVideo);
+  document.getElementById('tab-video').classList.toggle('active', isVideo);
+  document.getElementById('image-style-section').classList.toggle('hidden', isVideo);
+  document.getElementById('video-style-section').classList.toggle('hidden', !isVideo);
+
+  const startBtn = document.getElementById('start-btn');
+  startBtn.textContent = isVideo ? 'Generate Video' : 'Generate 3 Images';
+
+  // Reset selections on tab switch
+  selectedStyles = [];
+  selectedVideoStyle = null;
+  document.querySelectorAll('.style-btn').forEach(b => b.classList.remove('selected'));
+  document.querySelectorAll('.video-style-btn').forEach(b => b.classList.remove('selected'));
+  document.getElementById('style-count-label').textContent = '0/3 selected';
+
+  updateStartBtn();
+}
 
 // ── File upload ──────────────────────────────────────────────────────────────
 
@@ -230,7 +334,7 @@ function renderThumbs() {
     reader.onload = e => {
       const img = document.createElement('img');
       img.src = e.target.result;
-      img.title = (idx === 0 ? '★ Primary — ' : '') + file.name;
+      img.title = (idx === 0 ? 'Primary — ' : '') + file.name;
       if (idx === 0) img.style.borderColor = '#6366f1';
       thumbCont.appendChild(img);
     };
@@ -238,31 +342,62 @@ function renderThumbs() {
   });
 }
 
-// ── Style picker ─────────────────────────────────────────────────────────────
+// ── Image style picker ─────────────────────────────────────────────────────
 
 const styleGrid  = document.getElementById('style-grid');
 const styleLabel = document.getElementById('style-count-label');
 
-STYLES.forEach(s => {
+IMAGE_STYLES.forEach(s => {
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.dataset.styleId = s.id;
-  btn.className = 'style-btn border-2 border-gray-200 rounded-lg px-4 py-3 text-left hover:border-indigo-300 transition';
-  btn.innerHTML = '<span class="style-check text-indigo-600 mr-1">✓</span>' + s.label;
-  btn.addEventListener('click', () => toggleStyle(s.id, btn));
+  btn.className = 'style-btn border-2 border-gray-200 rounded-lg px-4 py-3 text-left hover:border-indigo-300 transition text-sm';
+  btn.innerHTML = '<span class="style-check text-indigo-600 mr-1">&#10003;</span>' + s.label;
+  btn.addEventListener('click', () => toggleImageStyle(s.id, btn));
   styleGrid.appendChild(btn);
 });
 
-function toggleStyle(id, btn) {
+function toggleImageStyle(id, btn) {
   if (selectedStyles.includes(id)) {
     selectedStyles = selectedStyles.filter(s => s !== id);
     btn.classList.remove('selected');
   } else {
-    if (selectedStyles.length >= 3) return; // hard cap at 3
+    if (selectedStyles.length >= 3) return;
     selectedStyles.push(id);
     btn.classList.add('selected');
   }
   styleLabel.textContent = selectedStyles.length + '/3 selected';
+  updateStartBtn();
+}
+
+// ── Video style picker ─────────────────────────────────────────────────────
+
+const videoStyleGrid = document.getElementById('video-style-grid');
+
+VIDEO_STYLES_DATA.forEach(s => {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.dataset.styleId = s.id;
+  btn.className = 'video-style-btn style-btn border-2 border-gray-200 rounded-lg px-4 py-3 text-left hover:border-indigo-300 transition';
+  btn.innerHTML =
+    '<span class="style-check text-indigo-600 mr-1">&#10003;</span>' +
+    '<span class="block font-medium text-sm text-gray-800">' + s.label + '</span>' +
+    '<span class="block text-xs text-gray-400 mt-1">' + s.description + '</span>';
+  btn.addEventListener('click', () => toggleVideoStyle(s.id, btn));
+  videoStyleGrid.appendChild(btn);
+});
+
+function toggleVideoStyle(id, btn) {
+  // Single selection for video
+  document.querySelectorAll('.video-style-btn').forEach(b => b.classList.remove('selected'));
+  if (selectedVideoStyle === id) {
+    selectedVideoStyle = null;
+  } else {
+    selectedVideoStyle = id;
+    btn.classList.add('selected');
+  }
+  // Show/hide voiceover section
+  document.getElementById('voiceover-section').classList.toggle('hidden', id !== 'video_ugc');
   updateStartBtn();
 }
 
@@ -271,7 +406,12 @@ function toggleStyle(id, btn) {
 const startBtn = document.getElementById('start-btn');
 
 function updateStartBtn() {
-  const ready = selectedFiles.length >= 1 && selectedStyles.length === 3;
+  let ready = false;
+  if (currentMediaType === 'image') {
+    ready = selectedFiles.length >= 1 && selectedStyles.length === 3;
+  } else {
+    ready = selectedFiles.length >= 1 && selectedVideoStyle !== null;
+  }
   startBtn.disabled = !ready;
 }
 
@@ -296,13 +436,30 @@ async function runGeneration() {
   progressArea.classList.remove('hidden');
   resultsArea.classList.add('hidden');
   analysisBlock.classList.add('hidden');
-  progressText.textContent = '📷 Photo mil gayi! 3 ads bana rahe hain...';
+
+  const isVideo = currentMediaType === 'video';
+  progressText.textContent = isVideo
+    ? 'Uploading photos and generating video with Seedance 2.0... (may take 1–3 min)'
+    : 'Photo mil gayi! 3 ads bana rahe hain...';
 
   const formData = new FormData();
   selectedFiles.forEach(f => formData.append('photos', f));
-  selectedStyles.forEach(s => formData.append('styles', s));
-  const instructions = document.getElementById('instructions').value.trim();
-  if (instructions) formData.append('instructions', instructions);
+  formData.append('mediaType', currentMediaType);
+
+  if (isVideo) {
+    formData.append('videoStyle', selectedVideoStyle);
+    formData.append('videoDuration', String(document.getElementById('duration-slider').value));
+    const ar = document.querySelector('input[name="aspectRatio"]:checked');
+    formData.append('aspectRatio', ar ? ar.value : '9:16');
+    const voiceover = document.getElementById('voiceover-text').value.trim();
+    if (voiceover) formData.append('voiceoverText', voiceover);
+    const lang = document.getElementById('voiceover-lang').value;
+    formData.append('voiceoverLanguage', lang);
+  } else {
+    selectedStyles.forEach(s => formData.append('styles', s));
+    const instructions = document.getElementById('instructions').value.trim();
+    if (instructions) formData.append('instructions', instructions);
+  }
 
   const url = '/admin/test/generate' + (ADMIN_KEY ? '?key=' + encodeURIComponent(ADMIN_KEY) : '');
 
@@ -351,70 +508,139 @@ async function runGeneration() {
     });
   }
 
-  // Show results
   progressArea.classList.add('hidden');
   resultsArea.classList.remove('hidden');
   resultsGrid.innerHTML = '';
 
-  const results = data.results ?? [];
-  results.forEach((r, idx) => {
-    const styleLabel = STYLES.find(s => s.id === r.style)?.label ?? r.style;
-    const card = document.createElement('div');
-    card.className = 'result-card bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden';
+  if (isVideo && data.video) {
+    renderVideoResult(data);
+  } else {
+    const results = data.results ?? [];
+    results.forEach((r, idx) => {
+      renderImageResult(r, idx);
+    });
+  }
+}
 
-    const qaIcon   = r.qaScore >= 65 ? '✅' : '⚠️';
-    const qaClass  = r.qaScore >= 65 ? 'text-green-700' : 'text-yellow-700';
-    const tierBadge = r.tier ? 'Tier ' + r.tier + ' — ' + (r.pipeline ?? '') : (r.pipeline ?? '');
+function renderImageResult(r, idx) {
+  const styleInfo = IMAGE_STYLES.find(s => s.id === r.style);
+  const styleLabel = styleInfo?.label ?? r.style;
+  const card = document.createElement('div');
+  card.className = 'result-card bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden';
 
-    if (r.error) {
-      card.innerHTML =
-        '<div class="p-4">' +
-          '<p class="font-semibold text-gray-800 mb-1">' + escHtml(styleLabel) + ' <span class="text-gray-400 text-xs">' + (idx+1) + '/3</span></p>' +
-          '<div class="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">' +
-            '<p class="font-medium mb-1">Generation failed</p>' +
-            '<p class="font-mono text-xs break-all">' + escHtml(r.error) + '</p>' +
-          '</div>' +
-        '</div>';
-    } else {
-      // Input thumb (primary photo) — small DataURL we stashed
-      const thumbHtml = data.primaryThumbDataUrl
-        ? '<div class="mt-3"><p class="text-xs text-gray-400 mb-1">Input (Primary)</p><img src="' + escHtml(data.primaryThumbDataUrl) + '" class="h-12 w-auto rounded border border-gray-200" /></div>'
-        : '';
+  const qaIcon   = r.qaScore >= 65 ? '&#10003;' : '&#9888;';
+  const qaClass  = r.qaScore >= 65 ? 'text-green-700' : 'text-yellow-700';
+  const tierBadge = r.tier ? 'Tier ' + r.tier + ' — ' + (r.pipeline ?? '') : (r.pipeline ?? '');
 
-      card.innerHTML =
-        '<img src="' + escHtml(r.outputUrl) + '" class="w-full aspect-square object-cover" />' +
-        '<div class="p-4">' +
-          '<p class="font-semibold text-gray-800 mb-1">' + escHtml(styleLabel) + ' <span class="text-gray-400 text-xs">(' + (idx+1) + '/3)</span></p>' +
-          '<div class="flex items-center gap-3 text-xs mb-3">' +
-            '<span class="' + qaClass + '">' + qaIcon + ' QA ' + r.qaScore + '</span>' +
-            '<span class="text-gray-400">⏱ ' + ((r.durationMs ?? 0) / 1000).toFixed(1) + 's</span>' +
-            '<span class="text-gray-400 italic">' + escHtml(tierBadge) + '</span>' +
-          '</div>' +
-          (r.prompt
-            ? '<div class="mt-3 mb-3">' +
-                '<div class="flex items-center justify-between mb-1">' +
-                  '<span class="text-xs text-gray-500 uppercase tracking-wide">Prompt sent to Gemini</span>' +
-                  '<button onclick="copyPrompt(this)" class="text-xs text-indigo-600 hover:text-indigo-800 font-medium transition">Copy</button>' +
-                '</div>' +
-                '<pre class="bg-gray-50 border border-gray-200 rounded p-3 text-xs text-gray-800 font-mono whitespace-pre-wrap max-h-52 overflow-y-auto">' + escHtml(r.prompt) + '</pre>' +
-              '</div>'
-            : '') +
-          thumbHtml +
-          '<a href="' + escHtml(r.outputUrl) + '" download class="mt-3 block text-center text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg py-2 transition">Download</a>' +
-        '</div>';
-    }
+  if (r.error) {
+    card.innerHTML =
+      '<div class="p-4">' +
+        '<p class="font-semibold text-gray-800 mb-1">' + escHtml(styleLabel) + ' <span class="text-gray-400 text-xs">' + (idx+1) + '/3</span></p>' +
+        '<div class="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">' +
+          '<p class="font-medium mb-1">Generation failed</p>' +
+          '<p class="font-mono text-xs break-all">' + escHtml(r.error) + '</p>' +
+        '</div>' +
+      '</div>';
+  } else {
+    card.innerHTML =
+      '<img src="' + escHtml(r.outputUrl) + '" class="w-full aspect-square object-cover" />' +
+      '<div class="p-4">' +
+        '<p class="font-semibold text-gray-800 mb-1">' + escHtml(styleLabel) + ' <span class="text-gray-400 text-xs">(' + (idx+1) + '/3)</span></p>' +
+        '<div class="flex items-center gap-3 text-xs mb-3">' +
+          '<span class="' + qaClass + '">' + qaIcon + ' QA ' + r.qaScore + '</span>' +
+          '<span class="text-gray-400">&#9200; ' + ((r.durationMs ?? 0) / 1000).toFixed(1) + 's</span>' +
+          '<span class="text-gray-400 italic">' + escHtml(tierBadge) + '</span>' +
+        '</div>' +
+        (r.prompt
+          ? '<div class="mt-3 mb-3">' +
+              '<div class="flex items-center justify-between mb-1">' +
+                '<span class="text-xs text-gray-500 uppercase tracking-wide">Prompt sent to Gemini</span>' +
+                '<button onclick="copyPrompt(this)" class="text-xs text-indigo-600 hover:text-indigo-800 font-medium transition">Copy</button>' +
+              '</div>' +
+              '<pre class="bg-gray-50 border border-gray-200 rounded p-3 text-xs text-gray-800 font-mono whitespace-pre-wrap max-h-52 overflow-y-auto">' + escHtml(r.prompt) + '</pre>' +
+            '</div>'
+          : '') +
+        '<a href="' + escHtml(r.outputUrl) + '" download class="mt-3 block text-center text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg py-2 transition">Download</a>' +
+      '</div>';
+  }
 
-    resultsGrid.appendChild(card);
-  });
+  resultsGrid.className = 'grid grid-cols-1 sm:grid-cols-3 gap-5';
+  resultsGrid.appendChild(card);
+}
+
+function renderVideoResult(data) {
+  const v = data.video;
+  resultsGrid.className = 'grid grid-cols-1 gap-5';
+  const card = document.createElement('div');
+  card.className = 'result-card bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden';
+
+  const styleInfo = VIDEO_STYLES_DATA.find(s => s.id === v.videoStyle);
+  const styleLabel = styleInfo ? styleInfo.label : v.videoStyle;
+
+  const metaHtml =
+    '<div class="flex flex-wrap items-center gap-4 text-xs text-gray-500 mb-4">' +
+      '<span><strong>Style:</strong> ' + escHtml(styleLabel) + '</span>' +
+      '<span><strong>Aspect:</strong> ' + escHtml(v.aspectRatio) + '</span>' +
+      '<span><strong>Duration:</strong> ' + v.durationSec + 's requested</span>' +
+      '<span><strong>Generation time:</strong> ' + ((v.durationMs ?? 0) / 1000).toFixed(1) + 's</span>' +
+      '<span><strong>Model:</strong> ' + escHtml(v.modelId) + '</span>' +
+    '</div>';
+
+  const videoHtml = v.videoUrl
+    ? '<video controls playsinline class="w-full rounded-lg" style="max-height:600px">' +
+        '<source src="' + escHtml(v.videoUrl) + '" type="video/mp4" />' +
+        'Your browser does not support the video tag.' +
+      '</video>'
+    : '<div class="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700 text-sm">' +
+        '<p class="font-medium">Video generation failed</p>' +
+        '<p class="font-mono text-xs mt-1 break-all">' + escHtml(v.error ?? 'Unknown error') + '</p>' +
+      '</div>';
+
+  const promptHtml = v.prompt
+    ? '<div class="mt-4">' +
+        '<div class="flex items-center justify-between mb-1">' +
+          '<span class="text-xs text-gray-500 uppercase tracking-wide">Prompt sent to Seedance 2.0</span>' +
+          '<button onclick="copyPrompt(this)" class="text-xs text-indigo-600 hover:text-indigo-800 font-medium transition">Copy</button>' +
+        '</div>' +
+        '<pre class="bg-gray-50 border border-gray-200 rounded p-3 text-xs text-gray-800 font-mono whitespace-pre-wrap max-h-52 overflow-y-auto">' + escHtml(v.prompt) + '</pre>' +
+      '</div>'
+    : '';
+
+  const voiceoverHtml = v.voiceoverText
+    ? '<div class="mt-3 bg-indigo-50 border border-indigo-200 rounded-lg p-3 text-sm">' +
+        '<p class="text-xs text-indigo-500 mb-1 font-medium">Voiceover (lip-sync)</p>' +
+        '<p class="text-indigo-800">' + escHtml(v.voiceoverText) + '</p>' +
+      '</div>'
+    : '';
+
+  const downloadHtml = v.videoUrl
+    ? '<a href="' + escHtml(v.videoUrl) + '" download class="mt-4 block text-center text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg py-2 transition">Download MP4</a>'
+    : '';
+
+  card.innerHTML =
+    '<div class="p-5">' +
+      '<h3 class="font-semibold text-gray-900 text-lg mb-3">Video Ad — ' + escHtml(styleLabel) + '</h3>' +
+      metaHtml +
+      videoHtml +
+      voiceoverHtml +
+      promptHtml +
+      downloadHtml +
+    '</div>';
+
+  resultsGrid.appendChild(card);
 }
 
 function resetUI() {
   selectedFiles = [];
   selectedStyles = [];
+  selectedVideoStyle = null;
   renderThumbs();
   document.querySelectorAll('.style-btn').forEach(b => b.classList.remove('selected'));
-  styleLabel.textContent = '0/3 selected';
+  document.querySelectorAll('.video-style-btn').forEach(b => b.classList.remove('selected'));
+  document.getElementById('style-count-label').textContent = '0/3 selected';
   document.getElementById('instructions').value = '';
+  document.getElementById('voiceover-text').value = '';
+  document.getElementById('voiceover-section').classList.add('hidden');
   resultsArea.classList.add('hidden');
   clearError();
   updateStartBtn();
@@ -458,9 +684,17 @@ function copyPrompt(btn) {
 // Fastify plugin
 // ---------------------------------------------------------------------------
 
-const GenerateBodySchema = z.object({
+const GenerateImageBodySchema = z.object({
   styles: z.array(z.string()).min(3).max(3),
   instructions: z.string().optional(),
+});
+
+const GenerateVideoBodySchema = z.object({
+  videoStyle: z.string(),
+  videoDuration: z.coerce.number().min(1).max(10).default(5),
+  aspectRatio: z.enum(['1:1', '9:16', '16:9']).default('9:16'),
+  voiceoverText: z.string().optional(),
+  voiceoverLanguage: z.enum(['en', 'hi', 'hinglish']).default('hinglish'),
 });
 
 export async function adminTestRoutes(app: FastifyInstance): Promise<void> {
@@ -491,6 +725,14 @@ export async function adminTestRoutes(app: FastifyInstance): Promise<void> {
     let photoBuffers: Array<{ buffer: Buffer; mimetype: string; filename: string }> = [];
     let rawStyles: string[] = [];
     let instructions: string | undefined;
+    let mediaType: 'image' | 'video' = 'image';
+
+    // Video-specific raw fields
+    let videoStyle: string | undefined;
+    let videoDurationRaw: string | undefined;
+    let aspectRatio: string | undefined;
+    let voiceoverText: string | undefined;
+    let voiceoverLanguage: string | undefined;
 
     // Parse multipart fields and files
     for await (const part of parts) {
@@ -512,53 +754,32 @@ export async function adminTestRoutes(app: FastifyInstance): Promise<void> {
           await part.toBuffer(); // drain unexpected files
         }
       } else {
-        // field
         const value = part.value as string;
         if (part.fieldname === 'styles') rawStyles.push(value);
         if (part.fieldname === 'instructions') instructions = value.trim() || undefined;
+        if (part.fieldname === 'mediaType' && (value === 'image' || value === 'video')) mediaType = value;
+        if (part.fieldname === 'videoStyle') videoStyle = value.trim();
+        if (part.fieldname === 'videoDuration') videoDurationRaw = value.trim();
+        if (part.fieldname === 'aspectRatio') aspectRatio = value.trim();
+        if (part.fieldname === 'voiceoverText') voiceoverText = value.trim() || undefined;
+        if (part.fieldname === 'voiceoverLanguage') voiceoverLanguage = value.trim();
       }
     }
 
-    // Validate
+    // Validate common
     if (photoBuffers.length === 0) {
       return reply.code(400).send({ error: 'At least 1 photo required', code: 'NO_PHOTOS' });
     }
 
-    const parsed = GenerateBodySchema.safeParse({ styles: rawStyles, instructions });
-    if (!parsed.success) {
-      return reply.code(400).send({
-        error: parsed.error.errors[0]?.message ?? 'Invalid input',
-        code: 'VALIDATION_ERROR',
-      });
-    }
-
-    const { styles } = parsed.data;
-
-    // Upload primary photo to Supabase
     const primary = photoBuffers[0]!;
-    const storagePath = `admin-test-${Date.now()}.jpg`;
-    let imageUrl: string;
-
-    try {
-      imageUrl = await uploadFile('raw-images', storagePath, primary.buffer, primary.mimetype);
-    } catch (err) {
-      app.log.error({ err }, 'Admin test: failed to upload primary photo');
-      return reply.code(500).send({
-        error: 'Failed to upload photo to storage',
-        code: 'STORAGE_UPLOAD_FAILED',
-      });
-    }
-
-    // Collect reference buffers (all photos except primary)
     const referenceImageBuffers = photoBuffers.slice(1).map(p => p.buffer);
 
-    // Light analysis (once, shared across all styles) — pass all photo buffers
+    // Light analysis — shared across image and video paths
     let analysis;
     try {
       analysis = await lightAnalyze([primary.buffer, ...referenceImageBuffers]);
     } catch (err) {
       app.log.warn({ err }, 'Admin test: lightAnalyze failed — continuing with fallback');
-      // Minimal fallback so generation can still proceed
       analysis = {
         productName: 'product',
         productCategory: 'other',
@@ -573,11 +794,123 @@ export async function adminTestRoutes(app: FastifyInstance): Promise<void> {
       };
     }
 
+    // ── VIDEO PATH ──────────────────────────────────────────────────────────
+    if (mediaType === 'video') {
+      const videoParsed = GenerateVideoBodySchema.safeParse({
+        videoStyle,
+        videoDuration: videoDurationRaw,
+        aspectRatio,
+        voiceoverText,
+        voiceoverLanguage,
+      });
+
+      if (!videoParsed.success) {
+        return reply.code(400).send({
+          error: videoParsed.error.errors[0]?.message ?? 'Invalid video options',
+          code: 'VALIDATION_ERROR',
+        });
+      }
+
+      const { videoStyle: vStyle, videoDuration, aspectRatio: vAspect, voiceoverText: vVoiceover, voiceoverLanguage: vLang } = videoParsed.data;
+
+      // Build prompt via getVideoPrompt
+      const promptResult = getVideoPrompt({
+        style: vStyle as 'video_cinematic' | 'video_ugc' | 'video_demo',
+        analysis,
+        userInstructions: instructions,
+        voiceoverText: vVoiceover,
+        voiceoverLanguage: vLang,
+      });
+
+      const videoStart = Date.now();
+      let videoResult: {
+        videoUrl: string | null;
+        durationMs: number;
+        modelId: string;
+        error: string | null;
+        voiceoverText?: string;
+      };
+
+      try {
+        const generated = await generateProductVideo({
+          productImageBuffers: [primary.buffer, ...referenceImageBuffers],
+          prompt: promptResult.prompt,
+          durationSec: videoDuration,
+          aspectRatio: vAspect,
+          generateAudio: true,
+          voiceoverText: promptResult.voiceoverText,
+          voiceoverLanguage: vLang,
+        });
+
+        // Upload mp4 to Supabase videos bucket
+        const videoFilename = `admin-test-video-${Date.now()}.mp4`;
+        const videoUrl = await uploadFile(Buckets.VIDEOS, videoFilename, generated.videoBuffer, 'video/mp4');
+
+        videoResult = {
+          videoUrl,
+          durationMs: generated.durationMs,
+          modelId: generated.modelId,
+          error: null,
+          voiceoverText: promptResult.voiceoverText,
+        };
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        app.log.error({ err, vStyle }, 'Admin test: video generation failed');
+        videoResult = {
+          videoUrl: null,
+          durationMs: Date.now() - videoStart,
+          modelId: 'fal-ai/bytedance/seedance/v2.0/reference-to-video',
+          error: errMsg,
+          voiceoverText: promptResult.voiceoverText,
+        };
+      }
+
+      return reply.send({
+        analysis,
+        video: {
+          videoStyle: vStyle,
+          videoUrl: videoResult.videoUrl,
+          prompt: promptResult.prompt,
+          voiceoverText: videoResult.voiceoverText,
+          aspectRatio: vAspect,
+          durationSec: videoDuration,
+          durationMs: videoResult.durationMs,
+          modelId: videoResult.modelId,
+          error: videoResult.error,
+        },
+      });
+    }
+
+    // ── IMAGE PATH ──────────────────────────────────────────────────────────
+
+    const parsed = GenerateImageBodySchema.safeParse({ styles: rawStyles, instructions });
+    if (!parsed.success) {
+      return reply.code(400).send({
+        error: parsed.error.errors[0]?.message ?? 'Invalid input',
+        code: 'VALIDATION_ERROR',
+      });
+    }
+
+    const { styles } = parsed.data;
+
+    // Upload primary photo to Supabase
+    const storagePath = `admin-test-${Date.now()}.jpg`;
+    let imageUrl: string;
+
+    try {
+      imageUrl = await uploadFile('raw-images', storagePath, primary.buffer, primary.mimetype);
+    } catch (err) {
+      app.log.error({ err }, 'Admin test: failed to upload primary photo');
+      return reply.code(500).send({
+        error: 'Failed to upload photo to storage',
+        code: 'STORAGE_UPLOAD_FAILED',
+      });
+    }
+
     // Run 3 style generations in parallel
     const generationTasks = styles.map(async (style) => {
       const styleStart = Date.now();
 
-      // Capture the prompt before running (same call the pipeline uses internally)
       let prompt: string;
       try {
         prompt = getStylePromptV5(style, 'DIRECT', analysis, instructions);
