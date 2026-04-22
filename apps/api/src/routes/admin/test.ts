@@ -842,9 +842,18 @@ export async function adminTestRoutes(app: FastifyInstance): Promise<void> {
           voiceoverLanguage: vLang,
         });
 
-        // Upload mp4 to Supabase videos bucket
-        const videoFilename = `admin-test-video-${Date.now()}.mp4`;
-        const videoUrl = await uploadFile(Buckets.VIDEOS, videoFilename, generated.videoBuffer, 'video/mp4');
+        // Upload mp4 to Supabase videos bucket — best-effort.
+        // On Node 25.8.1 the undici stack sometimes fails with UND_ERR_SOCKET
+        // on large file uploads. If Supabase upload fails, fall back to the
+        // fal.ai hosted URL (temporary but usable for beta preview).
+        let videoUrl: string;
+        try {
+          const videoFilename = `admin-test-video-${Date.now()}.mp4`;
+          videoUrl = await uploadFile(Buckets.VIDEOS, videoFilename, generated.videoBuffer, 'video/mp4');
+        } catch (uploadErr) {
+          app.log.warn({ err: uploadErr }, 'Admin test: Supabase video upload failed, using fal URL');
+          videoUrl = generated.falVideoUrl;
+        }
 
         videoResult = {
           videoUrl,

@@ -17,6 +17,7 @@
  */
 
 import { fal } from '@fal-ai/client';
+import sharp from 'sharp';
 import { getProviderKey } from '@autmn/keypool';
 import { uploadFile, Buckets } from '@autmn/storage';
 import { downloadBuffer } from '../pipeline/fallback.js';
@@ -25,9 +26,15 @@ import { downloadBuffer } from '../pipeline/fallback.js';
 // Constants
 // ---------------------------------------------------------------------------
 
-const SEEDANCE_MODEL = 'fal-ai/bytedance/seedance-2.0/reference-to-video';
-const TIMEOUT_PER_ATTEMPT_MS = 3 * 60 * 1000; // 3 minutes
-const MAX_ATTEMPTS = 3;
+// Seedance 2.0 is published by ByteDance directly on fal (not under the fal-ai
+// namespace). The route is `bytedance/seedance-2.0/image-to-video` — no fal-ai/
+// prefix. Confirmed via fal.run URL structure: fal.run/bytedance/seedance-2.0/...
+const SEEDANCE_MODEL = 'bytedance/seedance-2.0/image-to-video';
+// Seedance 2.0 video generation takes 2–5 min typically, sometimes longer when
+// the fal.ai queue is busy. Single attempt with a 7-minute timeout — retries
+// are expensive ($0.50/video) and won't help if the queue is slow.
+const TIMEOUT_PER_ATTEMPT_MS = 7 * 60 * 1000; // 7 minutes
+const MAX_ATTEMPTS = 1;
 const BASE_BACKOFF_MS = 2_000;
 
 // ---------------------------------------------------------------------------
@@ -54,6 +61,8 @@ export interface SeedanceVideoParams {
 export interface SeedanceVideoResult {
   /** Raw mp4 bytes */
   videoBuffer: Buffer;
+  /** Public URL from fal.ai — temporary, but directly usable for beta preview */
+  falVideoUrl: string;
   /** Actual generation wall-clock time */
   durationMs: number;
   /** The fal.ai model endpoint that was called */
@@ -68,10 +77,22 @@ function ensureFalConfig() {
   fal.config({ credentials: getProviderKey('fal') });
 }
 
-/** Upload a single image buffer to Supabase and return its public URL. */
+/**
+ * Upload a single image buffer to Supabase and return its public URL.
+ *
+ * 2026-04-22: Downscale to max 1536px before upload. Full-size phone photos
+ * (3–5 MB) were triggering UND_ERR_SOCKET on Node 25.8.1's undici fetch. Seedance
+ * downscales internally anyway, so there's no fidelity cost to a 1536-px JPEG at
+ * quality 85 — payload drops to ~100–300 KB and uploads succeed reliably.
+ */
 async function uploadImageBuffer(buffer: Buffer, index: number): Promise<string> {
   const filename = `seedance_ref_${Date.now()}_${index}.jpg`;
-  return uploadFile(Buckets.PROCESSED_IMAGES, filename, buffer, 'image/jpeg');
+  const compressed = await sharp(buffer)
+    .rotate() // honor EXIF orientation (phone photos often need this)
+    .resize(1536, 1536, { fit: 'inside', withoutEnlargement: true })
+    .jpeg({ quality: 85, mozjpeg: true })
+    .toBuffer();
+  return uploadFile(Buckets.PROCESSED_IMAGES, filename, compressed, 'image/jpeg');
 }
 
 /** Map our voiceoverLanguage to the language tag Seedance accepts. */
@@ -152,27 +173,27 @@ export async function generateProductVideo(
     throw new Error(`Seedance: failed to upload reference images — ${msg}`);
   }
 
-  // Step 2 — Build fal.ai input
-  // Seedance 2.0 reference-to-video input schema (from fal.ai docs):
-  //   image_urls: string[]        — reference images (up to 9)
-  //   prompt: string
-  //   duration: number            — seconds (1–10)
-  //   aspect_ratio: string        — "16:9" | "9:16" | "1:1"
-  //   generate_audio: boolean
-  //   voiceover_text?: string
-  //   language?: string
+  // Step 2 — Build fal.ai input per the actual OpenAPI schema (2026-04-22):
+  //   image_url: string             — starting frame URL (required)
+  //   prompt: string                — motion description (required)
+  //   duration: "auto"|"4"..."15"  — STRING, not number! enum of quoted digits
+  //   aspect_ratio: "auto"|"16:9"|"9:16"|"1:1"|"21:9"|"4:3"|"3:4"
+  //   resolution: "480p"|"720p"|"1080p" — default 720p
+  //   generate_audio: boolean       — default true; no per-voice params in i2v
+  //   end_image_url?, seed?, end_user_id?: optional
+  //
+  // No voiceover_text / language params on the image-to-video endpoint —
+  // those exist on reference-to-video only. For the UGC style, we embed the
+  // avatar's script inside the prompt itself (Gemini-style instruction).
   const falInput: Record<string, unknown> = {
-    image_urls: referenceUrls,
-    prompt,
-    duration: clampedDuration,
+    image_url: referenceUrls[0],
+    prompt: voiceoverText
+      ? `${prompt}\n\nThe person in the video speaks the following line in ${mapLanguage(voiceoverLanguage)} with natural lip-sync: "${voiceoverText}"`
+      : prompt,
+    duration: String(clampedDuration),
     aspect_ratio: aspectRatio,
     generate_audio: generateAudio,
   };
-
-  if (voiceoverText) {
-    falInput['voiceover_text'] = voiceoverText;
-    falInput['language'] = mapLanguage(voiceoverLanguage);
-  }
 
   // Step 3 — Call Seedance 2.0 with retry + timeout
   let lastError: Error = new Error('Unknown error');
@@ -220,6 +241,7 @@ export async function generateProductVideo(
 
       return {
         videoBuffer,
+        falVideoUrl: videoUrl,
         durationMs,
         modelId: SEEDANCE_MODEL,
       };
