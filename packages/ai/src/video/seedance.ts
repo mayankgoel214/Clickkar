@@ -1,7 +1,10 @@
 /**
  * Seedance 2.0 — product video generation via fal.ai
  *
- * Model: fal-ai/bytedance/seedance/v2.0/reference-to-video
+ * Model: fal-ai/bytedance/seedance-2.0/reference-to-video
+ * (Corrected 2026-04-22 — integrator initially had `seedance/v2.0/` which 404'd.
+ *  fal.ai's actual slug pattern is `seedance-2.0` hyphenated, per
+ *  https://fal.ai/models/bytedance/seedance-2.0/reference-to-video)
  * Accepts up to 9 reference images (as URLs), text prompt, native audio generation.
  * Multi-shot cinematic output. Phoneme-level lip-sync in 8+ languages (incl. Hindi).
  *
@@ -22,7 +25,7 @@ import { downloadBuffer } from '../pipeline/fallback.js';
 // Constants
 // ---------------------------------------------------------------------------
 
-const SEEDANCE_MODEL = 'fal-ai/bytedance/seedance/v2.0/reference-to-video';
+const SEEDANCE_MODEL = 'fal-ai/bytedance/seedance-2.0/reference-to-video';
 const TIMEOUT_PER_ATTEMPT_MS = 3 * 60 * 1000; // 3 minutes
 const MAX_ATTEMPTS = 3;
 const BASE_BACKOFF_MS = 2_000;
