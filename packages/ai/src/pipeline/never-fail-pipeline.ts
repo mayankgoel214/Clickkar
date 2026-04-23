@@ -25,6 +25,7 @@ import type { ProcessImageParams, ProcessImageResult } from './orchestrator.js';
 import { downloadBuffer, uploadToStorage, postProcessFinal, addAILabel } from './fallback.js';
 import { lightAnalyze, type LightAnalysis } from './light-analyzer.js';
 import { preprocessImage } from './preprocess.js';
+import { checkContentSafety } from './content-safety.js';
 import type { ProductProfileV4 } from './product-analyzer-v4.js';
 
 // ---------------------------------------------------------------------------
@@ -251,6 +252,38 @@ export async function processImageNeverFail(
     rawBuffer = await downloadBuffer(params.imageUrl);
   } catch (err) {
     throw new Error(`Cannot download input image: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // Phase B (2026-04-22): content-safety pre-flight.
+  // Fail fast on products Gemini will refuse (weapons, explicit, regulated
+  // alcohol etc.) — avoid burning ~$0.50 + 3 min of compute looping through
+  // tiers that will all refuse. Runs off the lightAnalyze of the raw buffer,
+  // so the safety check doesn't need its own preprocess pass.
+  try {
+    const { buffer: analysisBuffer } = await preprocessImage(rawBuffer);
+    const analysis = await lightAnalyze([analysisBuffer, ...(params.referenceImageBuffers ?? [])]);
+    const safety = await checkContentSafety(analysis);
+
+    if (!safety.safe) {
+      console.warn(JSON.stringify({
+        event: 'never_fail_safety_blocked',
+        blockReason: safety.blockReason,
+        productName: analysis.productName,
+        durationMs: Date.now() - totalStart,
+      }));
+      // Marker string picked up by worker — order is marked failed, no ship.
+      throw new Error(
+        `needs_refund: true — content_safety_blocked (${safety.blockReason ?? 'other'}): ${safety.userMessage ?? 'Product cannot be generated.'}`,
+      );
+    }
+  } catch (err) {
+    // Propagate needs_refund errors; swallow anything else so generation still tries
+    // (Gemini's own filters downstream are the backstop).
+    if (err instanceof Error && err.message.includes('needs_refund')) throw err;
+    console.warn(JSON.stringify({
+      event: 'never_fail_safety_skipped',
+      reason: err instanceof Error ? err.message.slice(0, 120) : 'unknown',
+    }));
   }
 
   // -- Tier 1: gemini-3-pro-image-preview (primary / best quality) ----------

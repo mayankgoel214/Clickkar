@@ -1,13 +1,19 @@
 /**
- * OpenAI gpt-image-1 wrapper — Tier 3 provider fallback in the never-fail pipeline.
+ * OpenAI gpt-image-2 wrapper — Tier 3 provider fallback in the never-fail pipeline.
+ *
+ * Upgraded from gpt-image-1 to gpt-image-2 on 2026-04-22. gpt-image-2 launched
+ * 2026-04-21 and became #1 on Image Arena by +242 points — largest lead ever
+ * recorded. First image model with native reasoning ("thinking") for layout
+ * before generation, and 99%+ text-rendering accuracy (vs ~90% on 1.5).
+ * Relevant to our brand-text-on-package use case (Anker, Aquafit, Coke etc.).
  *
  * Matches the input/output shape of geminiGenerateImage() so the orchestrator
  * can call either without conditional branching at the call site.
  *
  * Key behaviours:
  * - Reads the API key through @autmn/keypool (getProviderKey('openai')).
- * - Model: gpt-image-1 at medium quality (~$0.034/image).
- * - Accepts up to 16 reference image buffers (API limit for gpt-image-1).
+ * - Model: gpt-image-2 at standard quality (~$0.21/image).
+ * - Accepts up to 16 reference image buffers (API limit).
  * - 3 attempts with exponential back-off, same pattern as geminiGenerateImage.
  * - Logs: openai_generate_start, openai_generate_complete, openai_generate_error.
  * - Does NOT use a circuit breaker — Tier 3 is already the last Gemini escape hatch.
@@ -23,7 +29,7 @@ import type { GeminiGenerateResult } from './gemini-generate.js';
 export interface OpenAIGenerateParams {
   inputImageBuffer: Buffer;
   prompt: string;
-  /** Optional reference images (up to 16 — gpt-image-1 limit). */
+  /** Optional reference images (up to 16 — gpt-image-2 limit). */
   referenceImageBuffers?: Buffer[];
 }
 
@@ -55,7 +61,7 @@ function mimeToExtension(mime: string): string {
 
 const TIMEOUT_MS = 90_000;
 const MAX_RETRIES = 3;
-const OPENAI_MODEL = 'gpt-image-1';
+const OPENAI_MODEL = 'gpt-image-2';
 const OPENAI_QUALITY = 'medium';
 
 // ---------------------------------------------------------------------------
