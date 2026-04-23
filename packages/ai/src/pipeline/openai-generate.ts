@@ -61,8 +61,34 @@ function mimeToExtension(mime: string): string {
 
 const TIMEOUT_MS = 90_000;
 const MAX_RETRIES = 3;
-const OPENAI_MODEL = 'gpt-image-2';
 const OPENAI_QUALITY = 'medium';
+
+/**
+ * Graceful model chain for Tier 3.
+ *
+ * gpt-image-2 launched 2026-04-21 and is Arena #1 — but OpenAI requires
+ * org verification to access it. Unverified orgs get 403. We auto-fall
+ * back through gpt-image-1.5 (verified orgs) to gpt-image-1 (GA, no
+ * verification needed) so Tier 3 is robust regardless of account state.
+ *
+ * Order: try the BEST model first, step down on 403 verification errors.
+ * Other errors (rate-limit, safety) don't trigger downgrade — those retry
+ * with the same model via the MAX_RETRIES loop.
+ */
+const OPENAI_MODEL_CHAIN = ['gpt-image-2', 'gpt-image-1.5', 'gpt-image-1'] as const;
+type OpenAIModelId = typeof OPENAI_MODEL_CHAIN[number];
+
+/**
+ * Detect if an error is specifically "org not verified for this model".
+ * Only THIS specific error triggers auto-fallback to the next model.
+ */
+function isModelVerificationError(err: unknown): boolean {
+  const msg = String(err);
+  return (
+    msg.includes('403') &&
+    (msg.includes('must be verified') || msg.includes('organization') && msg.includes('verify'))
+  );
+}
 
 // ---------------------------------------------------------------------------
 // openaiGenerateImage
@@ -85,9 +111,51 @@ export async function openaiGenerateImage(
   const { inputImageBuffer, prompt, referenceImageBuffers } = params;
   const startMs = Date.now();
 
+  // Try each model in the chain. Only 403 verification errors step down.
+  // Other errors bubble up to the caller.
+  let lastError: unknown = new Error('Unknown error');
+  for (const model of OPENAI_MODEL_CHAIN) {
+    try {
+      return await attemptGenerationWithModel(model, {
+        inputImageBuffer,
+        prompt,
+        referenceImageBuffers,
+        startMs,
+      });
+    } catch (err) {
+      if (isModelVerificationError(err)) {
+        console.warn(JSON.stringify({
+          event: 'openai_model_downgrade',
+          fromModel: model,
+          reason: 'org_not_verified',
+          message: String(err).slice(0, 200),
+        }));
+        lastError = err;
+        continue; // try next model in chain
+      }
+      // Non-verification error — don't downgrade, propagate
+      throw err;
+    }
+  }
+
+  // Every model in the chain returned a verification error — throw the last one
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+async function attemptGenerationWithModel(
+  model: OpenAIModelId,
+  ctx: {
+    inputImageBuffer: Buffer;
+    prompt: string;
+    referenceImageBuffers?: Buffer[];
+    startMs: number;
+  },
+): Promise<GeminiGenerateResult> {
+  const { inputImageBuffer, prompt, referenceImageBuffers, startMs } = ctx;
+
   console.info(JSON.stringify({
     event: 'openai_generate_start',
-    model: OPENAI_MODEL,
+    model,
     quality: OPENAI_QUALITY,
     promptLength: prompt.length,
     referenceCount: referenceImageBuffers?.length ?? 0,
@@ -124,7 +192,7 @@ export async function openaiGenerateImage(
     );
 
     const response = await client.images.edit({
-      model: OPENAI_MODEL,
+      model,
       image: imageFiles[0]!,
       prompt,
       n: 1,
@@ -152,7 +220,7 @@ export async function openaiGenerateImage(
     const durationMs = Date.now() - startMs;
     console.info(JSON.stringify({
       event: 'openai_generate_complete',
-      model: OPENAI_MODEL,
+      model,
       durationMs,
     }));
 
@@ -180,7 +248,8 @@ export async function openaiGenerateImage(
       lastError = err instanceof Error ? err : new Error(String(err));
       const errStr = String(err);
 
-      // Don't retry permanent errors (401, 403, invalid_api_key, content_policy)
+      // Don't retry permanent errors (401, 403, invalid_api_key, content_policy).
+      // 403 verification errors are handled by the outer model-chain fallback.
       if (
         errStr.includes('401') || errStr.includes('403') ||
         errStr.includes('invalid_api_key') || errStr.includes('content_policy_violation') ||
@@ -193,6 +262,7 @@ export async function openaiGenerateImage(
           permanent: true,
           durationMs,
           error: errStr.slice(0, 300),
+          model,
         }));
         throw lastError;
       }
@@ -201,7 +271,7 @@ export async function openaiGenerateImage(
         event: 'openai_generate_retry_error',
         attempt,
         error: errStr.slice(0, 200),
-        model: OPENAI_MODEL,
+        model,
       }));
     }
   }
