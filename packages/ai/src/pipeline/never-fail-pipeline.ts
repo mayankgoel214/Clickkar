@@ -26,6 +26,7 @@ import { downloadBuffer, uploadToStorage, postProcessFinal, addAILabel } from '.
 import { lightAnalyze, type LightAnalysis } from './light-analyzer.js';
 import { preprocessImage } from './preprocess.js';
 import { checkContentSafety } from './content-safety.js';
+import { emitPipelineMetrics, type PipelineTier } from './metrics.js';
 import type { ProductProfileV4 } from './product-analyzer-v4.js';
 
 // ---------------------------------------------------------------------------
@@ -245,6 +246,12 @@ export async function processImageNeverFail(
   params: NeverFailParams,
 ): Promise<NeverFailResult> {
   const totalStart = Date.now();
+  const style = params.style ?? 'unknown';
+
+  // Captured during safety pre-flight so metrics emission can reference them
+  // at any exit point (success / refund).
+  let analysisProductName = 'unknown';
+  let analysisProductCategory = 'unknown';
 
   // Pre-download the raw image buffer once -- reused across all tiers
   let rawBuffer: Buffer;
@@ -262,6 +269,8 @@ export async function processImageNeverFail(
   try {
     const { buffer: analysisBuffer } = await preprocessImage(rawBuffer);
     const analysis = await lightAnalyze([analysisBuffer, ...(params.referenceImageBuffers ?? [])]);
+    analysisProductName = analysis.productName;
+    analysisProductCategory = analysis.productCategory;
     const safety = await checkContentSafety(analysis);
 
     if (!safety.safe) {
@@ -271,6 +280,19 @@ export async function processImageNeverFail(
         productName: analysis.productName,
         durationMs: Date.now() - totalStart,
       }));
+      emitPipelineMetrics({
+        style,
+        tier: 'refund',
+        shipped: false,
+        qaScore: 0,
+        fidelityScore: 0,
+        totalDurationMs: Date.now() - totalStart,
+        safetyBlocked: true,
+        safetyBlockReason: safety.blockReason,
+        productName: analysis.productName,
+        productCategory: analysis.productCategory,
+        refundReason: 'content_safety',
+      });
       // Marker string picked up by worker — order is marked failed, no ship.
       throw new Error(
         `needs_refund: true — content_safety_blocked (${safety.blockReason ?? 'other'}): ${safety.userMessage ?? 'Product cannot be generated.'}`,
@@ -315,6 +337,19 @@ export async function processImageNeverFail(
         durationMs: Date.now() - totalStart,
       }));
 
+      emitPipelineMetrics({
+        style,
+        tier: 1,
+        shipped: true,
+        qaScore: result.qaScore,
+        fidelityScore: (result as { finalFidelityScore?: number }).finalFidelityScore ?? 0,
+        totalDurationMs: Date.now() - totalStart,
+        safetyBlocked: false,
+        productName: analysisProductName,
+        productCategory: analysisProductCategory,
+        model: TIER1_MODEL,
+      });
+
       return geminiResultToNeverFail(result, 1, totalStart);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
@@ -356,6 +391,19 @@ export async function processImageNeverFail(
         durationMs: Date.now() - totalStart,
       }));
 
+      emitPipelineMetrics({
+        style,
+        tier: 2,
+        shipped: true,
+        qaScore: result.qaScore,
+        fidelityScore: (result as { finalFidelityScore?: number }).finalFidelityScore ?? 0,
+        totalDurationMs: Date.now() - totalStart,
+        safetyBlocked: false,
+        productName: analysisProductName,
+        productCategory: analysisProductCategory,
+        model: TIER2_MODEL,
+      });
+
       return geminiResultToNeverFail(
         result,
         2,
@@ -373,13 +421,25 @@ export async function processImageNeverFail(
     }
   }
 
-  // -- Tier 3: OpenAI gpt-image-1 (provider fallback) ----------------------
+  // -- Tier 3: OpenAI gpt-image-2 (provider fallback) ----------------------
   try {
     const tier3Result = await withTimeout(
       runOpenAITier(rawBuffer, params, totalStart),
       OPENAI_TIER_TIMEOUT_MS,
-      'Tier 3 (OpenAI gpt-image-1)',
+      'Tier 3 (OpenAI gpt-image-2)',
     );
+    emitPipelineMetrics({
+      style,
+      tier: 3,
+      shipped: true,
+      qaScore: tier3Result.qaScore,
+      fidelityScore: 0,
+      totalDurationMs: Date.now() - totalStart,
+      safetyBlocked: false,
+      productName: analysisProductName,
+      productCategory: analysisProductCategory,
+      model: 'gpt-image-2',
+    });
     return tier3Result;
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
@@ -389,6 +449,18 @@ export async function processImageNeverFail(
       reason: reason.slice(0, 300),
       durationMs: Date.now() - totalStart,
     }));
+    emitPipelineMetrics({
+      style,
+      tier: 'refund',
+      shipped: false,
+      qaScore: 0,
+      fidelityScore: 0,
+      totalDurationMs: Date.now() - totalStart,
+      safetyBlocked: false,
+      productName: analysisProductName,
+      productCategory: analysisProductCategory,
+      refundReason: reason.slice(0, 120),
+    });
     // Propagate with needs_refund marker
     throw new Error(
       `[needs_refund: true] All 3 AI tiers exhausted (Pro -> Flash -> OpenAI). Last error: ${reason.slice(0, 200)}`,
