@@ -14,9 +14,11 @@ import { z } from 'zod';
 import { getConfig } from '../../config.js';
 import { uploadFile } from '@autmn/storage';
 import { Buckets } from '@autmn/storage';
-import { lightAnalyze } from '@autmn/ai';
-import { processImageNeverFail } from '@autmn/ai';
-import { getStylePromptV5 } from '@autmn/ai';
+import { lightAnalyze, type LightAnalysis } from '@autmn/ai';
+import { processOrderProduction } from '@autmn/ai';
+import { buildBetaPrompt } from '@autmn/ai';
+import { openaiGenerateImage, type OpenAIModelId } from '@autmn/ai';
+import { preprocessImage } from '@autmn/ai';
 
 // ---------------------------------------------------------------------------
 // Auth helper
@@ -26,7 +28,6 @@ function checkAuth(req: FastifyRequest, reply: FastifyReply): boolean {
   const config = getConfig();
   const adminSecret = config.ADMIN_SECRET ?? '';
 
-  // In dev with placeholder, skip auth
   if (config.NODE_ENV !== 'production' && adminSecret === 'placeholder') {
     return true;
   }
@@ -91,8 +92,6 @@ function buildHtml(adminKey: string): string {
     .style-btn.selected { border-color: #6366f1; background-color: #eef2ff; }
     .style-btn.selected .style-check { display: inline; }
     .style-btn .style-check { display: none; }
-    .media-tab { transition: all 0.15s; cursor: pointer; }
-    .media-tab.active { border-color: #6366f1; background-color: #eef2ff; color: #4338ca; font-weight: 600; }
     pre { white-space: pre-wrap; word-break: break-word; }
     .result-card { animation: fadeIn 0.3s ease-in; }
     @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
@@ -104,7 +103,7 @@ function buildHtml(adminKey: string): string {
   <!-- Header -->
   <div class="mb-8">
     <h1 class="text-2xl font-bold text-gray-900">Autmn Pipeline Tester</h1>
-    <p class="text-sm text-gray-500 mt-1">Upload 1–5 photos, configure generation, run the AI pipeline. Mirrors the WhatsApp flow.</p>
+    <p class="text-sm text-gray-500 mt-1">Upload 1–5 photos, pick 3 styles, run the production pipeline. Beta prompt + Pro → NB2 → GPT Image 2.</p>
   </div>
 
   <!-- Step 1: Upload Photos -->
@@ -125,68 +124,51 @@ function buildHtml(adminKey: string): string {
     <p id="photo-count-msg" class="text-sm text-gray-500 mt-2 hidden"></p>
   </div>
 
-  <!-- Step 2: IMAGE — Pick 3 Styles -->
-  <div id="image-style-section" class="bg-white rounded-xl border border-gray-200 p-6 mb-5 shadow-sm">
+  <!-- Step 2: Pick 3 Styles -->
+  <div class="bg-white rounded-xl border border-gray-200 p-6 mb-5 shadow-sm">
     <h2 class="font-semibold text-gray-800 mb-1">2. Pick Exactly 3 Styles</h2>
     <p id="style-count-label" class="text-sm text-gray-400 mb-4">0/3 selected</p>
     <div class="grid grid-cols-2 sm:grid-cols-3 gap-3" id="style-grid"></div>
   </div>
 
-  <!-- Step 3b: IMAGE — Pipeline mode (cost vs quality) -->
-  <div id="pipeline-mode-section" class="bg-white rounded-xl border border-gray-200 p-6 mb-5 shadow-sm">
-    <h2 class="font-semibold text-gray-800 mb-1">3. Pipeline Mode</h2>
-    <p class="text-sm text-gray-400 mb-4">Controls how many generations we run per style. Cost scales linearly.</p>
-    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3" id="mode-grid">
-      <label class="mode-option flex items-start gap-3 cursor-pointer border-2 border-gray-200 rounded-lg p-3 hover:border-indigo-300 transition" data-mode="full">
-        <input type="radio" name="pipelineMode" value="full" class="mt-1 accent-indigo-600" />
-        <div class="flex-1">
-          <div class="font-medium text-sm text-gray-800">Full <span class="text-xs text-gray-400">(prod default)</span></div>
-          <div class="text-xs text-gray-500">4 candidates + retry, safety preflight, best-of QA. Max quality.</div>
-        </div>
-      </label>
-      <label class="mode-option flex items-start gap-3 cursor-pointer border-2 border-indigo-500 rounded-lg p-3 bg-indigo-50 transition" data-mode="lean">
-        <input type="radio" name="pipelineMode" value="lean" checked class="mt-1 accent-indigo-600" />
-        <div class="flex-1">
-          <div class="font-medium text-sm text-gray-800">Lean <span class="text-xs text-gray-400">(~₹15/order)</span></div>
-          <div class="text-xs text-gray-500">1 candidate, no retry, no preflight. QA gate + Tier 2 fallback stay.</div>
-        </div>
-      </label>
-    </div>
+  <!-- Step 3: Pipeline info (read-only) -->
+  <div class="bg-indigo-50 border border-indigo-200 rounded-xl p-4 mb-5">
+    <p class="text-sm text-indigo-800 font-medium">Pipeline: Production (Beta)</p>
+    <p class="text-xs text-indigo-600 mt-1">Beta prompt per style &rarr; Tier 1: gemini-3-pro-image-preview (&#8377;13.40) &rarr; Tier 2: gemini-3.1-flash-image-preview (&#8377;4.50) &rarr; Tier 3: gpt-image-2 (&#8377;21.00). Ceiling per style: &#8377;38.90. Full order (3 styles): &#8377;50 ceiling.</p>
   </div>
 
-  <!-- Step 4: IMAGE — Model selector (cost testing) -->
-  <div id="image-model-section" class="bg-white rounded-xl border border-gray-200 p-6 mb-5 shadow-sm">
-    <h2 class="font-semibold text-gray-800 mb-1">4. Image Model (for cost testing)</h2>
-    <p class="text-sm text-gray-400 mb-4">Pick which model to use for Tier 1. Prices per 3-image order.</p>
+  <!-- Step 4: Model selector (for direct OpenAI A/B testing) -->
+  <div class="bg-white rounded-xl border border-gray-200 p-6 mb-5 shadow-sm">
+    <h2 class="font-semibold text-gray-800 mb-1">3. Model Override <span class="text-gray-400 text-sm font-normal">(optional — bypasses Gemini entirely)</span></h2>
+    <p class="text-sm text-gray-400 mb-4">Leave on "Auto (Production Chain)" to run the full tier chain. Select an OpenAI model to bypass Gemini and test direct OpenAI generation.</p>
     <div class="grid grid-cols-1 sm:grid-cols-2 gap-3" id="model-grid">
-      <label class="model-option flex items-start gap-3 cursor-pointer border-2 border-gray-200 rounded-lg p-3 hover:border-indigo-300 transition" data-model="gemini-3-pro-image-preview">
-        <input type="radio" name="imageModel" value="gemini-3-pro-image-preview" class="mt-1 accent-indigo-600" />
+      <label class="model-option flex items-start gap-3 cursor-pointer border-2 border-indigo-500 rounded-lg p-3 bg-indigo-50 transition" data-model="">
+        <input type="radio" name="imageModel" value="" checked class="mt-1 accent-indigo-600" />
         <div class="flex-1">
-          <div class="font-medium text-sm text-gray-800">Nano Banana Pro <span class="text-xs text-gray-400">(gemini-3-pro-image-preview)</span></div>
-          <div class="text-xs text-gray-500">₹40.20 — flagship quality, Arena #3</div>
+          <div class="font-medium text-sm text-gray-800">Auto (Production Chain)</div>
+          <div class="text-xs text-gray-500">Pro &rarr; NB2 &rarr; GPT-2. Best quality, uses full tier fallback.</div>
         </div>
       </label>
-      <label class="model-option flex items-start gap-3 cursor-pointer border-2 border-indigo-500 rounded-lg p-3 bg-indigo-50 transition" data-model="gemini-3.1-flash-image-preview">
-        <input type="radio" name="imageModel" value="gemini-3.1-flash-image-preview" checked class="mt-1 accent-indigo-600" />
+      <label class="model-option flex items-start gap-3 cursor-pointer border-2 border-gray-200 rounded-lg p-3 hover:border-indigo-300 transition" data-model="gpt-image-2">
+        <input type="radio" name="imageModel" value="gpt-image-2" class="mt-1 accent-indigo-600" />
         <div class="flex-1">
-          <div class="font-medium text-sm text-gray-800">Nano Banana 2 <span class="text-xs text-gray-400">(gemini-3.1-flash-image-preview)</span></div>
-          <div class="text-xs text-gray-500">₹13.50 — Arena #4, free tier 5K/month, 95% of Pro</div>
+          <div class="font-medium text-sm text-gray-800">GPT Image 2 <span class="text-xs text-gray-400">(direct, no Gemini)</span></div>
+          <div class="text-xs text-gray-500">&#8377;21/style — Arena #2 for editing. Direct bypass for comparison.</div>
         </div>
       </label>
-      <label class="model-option flex items-start gap-3 cursor-pointer border-2 border-gray-200 rounded-lg p-3 hover:border-indigo-300 transition" data-model="gemini-2.5-flash-image">
-        <input type="radio" name="imageModel" value="gemini-2.5-flash-image" class="mt-1 accent-indigo-600" />
+      <label class="model-option flex items-start gap-3 cursor-pointer border-2 border-gray-200 rounded-lg p-3 hover:border-indigo-300 transition" data-model="gpt-image-1.5">
+        <input type="radio" name="imageModel" value="gpt-image-1.5" class="mt-1 accent-indigo-600" />
         <div class="flex-1">
-          <div class="font-medium text-sm text-gray-800">Original Nano Banana <span class="text-xs text-gray-400">(gemini-2.5-flash-image)</span></div>
-          <div class="text-xs text-gray-500">₹11.70 — cheapest Gemini image</div>
+          <div class="font-medium text-sm text-gray-800">GPT Image 1.5 <span class="text-xs text-gray-400">(direct, no Gemini)</span></div>
+          <div class="text-xs text-gray-500">&#8377;10/style — cheaper OpenAI option for A/B testing.</div>
         </div>
       </label>
     </div>
   </div>
-
 
   <!-- Step 5: Instructions -->
   <div class="bg-white rounded-xl border border-gray-200 p-6 mb-5 shadow-sm">
-    <h2 class="font-semibold text-gray-800 mb-3">5. Instructions <span class="text-gray-400 text-sm font-normal">(optional)</span></h2>
+    <h2 class="font-semibold text-gray-800 mb-3">4. Instructions <span class="text-gray-400 text-sm font-normal">(optional)</span></h2>
     <textarea
       id="instructions"
       rows="3"
@@ -219,7 +201,11 @@ function buildHtml(adminKey: string): string {
 
   <!-- Results -->
   <div id="results-area" class="hidden mt-8">
-    <h2 class="text-lg font-semibold text-gray-800 mb-4">Results</h2>
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-lg font-semibold text-gray-800">Results</h2>
+      <!-- Cost summary -->
+      <div id="cost-summary" class="hidden text-sm font-medium rounded-lg px-3 py-1.5 border"></div>
+    </div>
     <div id="results-grid" class="grid grid-cols-1 sm:grid-cols-3 gap-5"></div>
     <button
       id="again-btn"
@@ -239,7 +225,6 @@ const IMAGE_STYLES = ${STYLES_JSON};
 
 let selectedFiles = [];
 let selectedStyles = [];
-let currentMediaType = 'image';
 
 // ── File upload ──────────────────────────────────────────────────────────────
 
@@ -294,7 +279,7 @@ function renderThumbs() {
   });
 }
 
-// ── Image style picker ─────────────────────────────────────────────────────
+// ── Style picker ─────────────────────────────────────────────────────────────
 
 const styleGrid  = document.getElementById('style-grid');
 const styleLabel = document.getElementById('style-count-label');
@@ -322,7 +307,7 @@ function toggleImageStyle(id, btn) {
   updateStartBtn();
 }
 
-// ── Model selector (image only) ──────────────────────────────────────────────
+// ── Model selector ────────────────────────────────────────────────────────────
 
 document.querySelectorAll('.model-option input[type="radio"]').forEach(radio => {
   radio.addEventListener('change', () => {
@@ -333,23 +318,6 @@ document.querySelectorAll('.model-option input[type="radio"]').forEach(radio => 
     const checked = document.querySelector('.model-option input[type="radio"]:checked');
     if (checked) {
       const label = checked.closest('.model-option');
-      label.classList.remove('border-gray-200');
-      label.classList.add('border-indigo-500', 'bg-indigo-50');
-    }
-  });
-});
-
-// ── Pipeline mode selector (image only) ──────────────────────────────────────
-
-document.querySelectorAll('.mode-option input[type="radio"]').forEach(radio => {
-  radio.addEventListener('change', () => {
-    document.querySelectorAll('.mode-option').forEach(label => {
-      label.classList.remove('border-indigo-500', 'bg-indigo-50');
-      label.classList.add('border-gray-200');
-    });
-    const checked = document.querySelector('.mode-option input[type="radio"]:checked');
-    if (checked) {
-      const label = checked.closest('.mode-option');
       label.classList.remove('border-gray-200');
       label.classList.add('border-indigo-500', 'bg-indigo-50');
     }
@@ -377,6 +345,7 @@ const resultsArea  = document.getElementById('results-area');
 const resultsGrid  = document.getElementById('results-grid');
 const errorArea    = document.getElementById('error-area');
 const againBtn     = document.getElementById('again-btn');
+const costSummary  = document.getElementById('cost-summary');
 
 againBtn.addEventListener('click', resetUI);
 
@@ -386,20 +355,18 @@ async function runGeneration() {
   progressArea.classList.remove('hidden');
   resultsArea.classList.add('hidden');
   analysisBlock.classList.add('hidden');
+  costSummary.classList.add('hidden');
 
   progressText.textContent = 'Photo mil gayi! 3 ads bana rahe hain...';
 
   const formData = new FormData();
   selectedFiles.forEach(f => formData.append('photos', f));
-  formData.append('mediaType', 'image');
 
   selectedStyles.forEach(s => formData.append('styles', s));
   const instructions = document.getElementById('instructions').value.trim();
   if (instructions) formData.append('instructions', instructions);
   const modelRadio = document.querySelector('input[name="imageModel"]:checked');
-  if (modelRadio) formData.append('imageModel', modelRadio.value);
-  const modeRadio = document.querySelector('input[name="pipelineMode"]:checked');
-  if (modeRadio) formData.append('pipelineMode', modeRadio.value);
+  if (modelRadio && modelRadio.value) formData.append('imageModel', modelRadio.value);
 
   const url = '/admin/test/generate' + (ADMIN_KEY ? '?key=' + encodeURIComponent(ADMIN_KEY) : '');
 
@@ -456,6 +423,22 @@ async function runGeneration() {
   results.forEach((r, idx) => {
     renderImageResult(r, idx);
   });
+
+  // Cost summary
+  if (data.costSummary) {
+    const cs = data.costSummary;
+    const overBudget = cs.grandTotalInr > 50;
+    costSummary.classList.remove('hidden');
+    costSummary.className = 'text-sm font-medium rounded-lg px-3 py-1.5 border ' +
+      (overBudget
+        ? 'bg-red-50 border-red-200 text-red-800'
+        : 'bg-green-50 border-green-200 text-green-800');
+    costSummary.textContent =
+      'Cost: \\u20B9' + cs.grandTotalInr.toFixed(2) +
+      ' | Margin: \\u20B9' + cs.marginInr.toFixed(2) +
+      ' (' + cs.marginPct.toFixed(1) + '%)' +
+      (cs.needsRefund ? ' | REFUND NEEDED' : '');
+  }
 }
 
 function renderImageResult(r, idx) {
@@ -464,9 +447,8 @@ function renderImageResult(r, idx) {
   const card = document.createElement('div');
   card.className = 'result-card bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden';
 
-  const qaIcon   = r.qaScore >= 65 ? '&#10003;' : '&#9888;';
-  const qaClass  = r.qaScore >= 65 ? 'text-green-700' : 'text-yellow-700';
-  const tierBadge = r.tier ? 'Tier ' + r.tier + ' — ' + (r.pipeline ?? '') : (r.pipeline ?? '');
+  const tierBadge = r.tier ? 'Tier ' + r.tier + ' — ' + (r.pipeline ?? r.model ?? '') : (r.pipeline ?? '');
+  const costBadge = r.costInr != null ? '\\u20B9' + Number(r.costInr).toFixed(2) : '';
 
   if (r.error) {
     card.innerHTML =
@@ -482,15 +464,15 @@ function renderImageResult(r, idx) {
       '<img src="' + escHtml(r.outputUrl) + '" class="w-full aspect-square object-cover" />' +
       '<div class="p-4">' +
         '<p class="font-semibold text-gray-800 mb-1">' + escHtml(styleLabel) + ' <span class="text-gray-400 text-xs">(' + (idx+1) + '/3)</span></p>' +
-        '<div class="flex items-center gap-3 text-xs mb-3">' +
-          '<span class="' + qaClass + '">' + qaIcon + ' QA ' + r.qaScore + '</span>' +
+        '<div class="flex items-center gap-3 text-xs mb-3 flex-wrap">' +
+          '<span class="text-gray-500 italic">' + escHtml(tierBadge) + '</span>' +
+          (costBadge ? '<span class="font-medium text-gray-700">' + escHtml(costBadge) + '</span>' : '') +
           '<span class="text-gray-400">&#9200; ' + ((r.durationMs ?? 0) / 1000).toFixed(1) + 's</span>' +
-          '<span class="text-gray-400 italic">' + escHtml(tierBadge) + '</span>' +
         '</div>' +
         (r.prompt
           ? '<div class="mt-3 mb-3">' +
               '<div class="flex items-center justify-between mb-1">' +
-                '<span class="text-xs text-gray-500 uppercase tracking-wide">Prompt sent to Gemini</span>' +
+                '<span class="text-xs text-gray-500 uppercase tracking-wide">Prompt</span>' +
                 '<button onclick="copyPrompt(this)" class="text-xs text-indigo-600 hover:text-indigo-800 font-medium transition">Copy</button>' +
               '</div>' +
               '<pre class="bg-gray-50 border border-gray-200 rounded p-3 text-xs text-gray-800 font-mono whitespace-pre-wrap max-h-52 overflow-y-auto">' + escHtml(r.prompt) + '</pre>' +
@@ -512,6 +494,7 @@ function resetUI() {
   document.getElementById('style-count-label').textContent = '0/3 selected';
   document.getElementById('instructions').value = '';
   resultsArea.classList.add('hidden');
+  costSummary.classList.add('hidden');
   clearError();
   updateStartBtn();
 }
@@ -559,12 +542,10 @@ const GenerateImageBodySchema = z.object({
   instructions: z.string().optional(),
 });
 
-
 export async function adminTestRoutes(app: FastifyInstance): Promise<void> {
-  // Register multipart support scoped to this plugin
   await app.register(multipart, {
     limits: {
-      fileSize: 10 * 1024 * 1024, // 10 MB per file
+      fileSize: 10 * 1024 * 1024,
       files: 5,
     },
   });
@@ -588,18 +569,13 @@ export async function adminTestRoutes(app: FastifyInstance): Promise<void> {
     let photoBuffers: Array<{ buffer: Buffer; mimetype: string; filename: string }> = [];
     let rawStyles: string[] = [];
     let instructions: string | undefined;
-
-    // Image-specific: Tier 1 model override (cost testing)
     let imageModel: string | undefined;
-    // Image-specific: pipeline cost/quality mode
-    let pipelineMode: 'full' | 'lean' | undefined;
 
-    // Parse multipart fields and files
     for await (const part of parts) {
       if (part.type === 'file') {
         if (part.fieldname === 'photos') {
           if (!part.mimetype.startsWith('image/')) {
-            await part.toBuffer(); // drain
+            await part.toBuffer();
             return reply.code(400).send({
               error: `File "${part.filename}" is not an image`,
               code: 'INVALID_FILE_TYPE',
@@ -611,44 +587,43 @@ export async function adminTestRoutes(app: FastifyInstance): Promise<void> {
             return reply.code(400).send({ error: 'Maximum 5 photos allowed', code: 'TOO_MANY_PHOTOS' });
           }
         } else {
-          await part.toBuffer(); // drain unexpected files
+          await part.toBuffer();
         }
       } else {
         const value = part.value as string;
         if (part.fieldname === 'styles') rawStyles.push(value);
         if (part.fieldname === 'instructions') instructions = value.trim() || undefined;
         if (part.fieldname === 'imageModel') imageModel = value.trim() || undefined;
-        if (part.fieldname === 'pipelineMode') {
-          const v = value.trim();
-          if (v === 'full' || v === 'lean') pipelineMode = v;
-        }
       }
     }
 
-    // Allowlist the model — only accept known Gemini image variants
-    const ALLOWED_MODELS = new Set([
-      'gemini-3-pro-image-preview',
-      'gemini-3.1-flash-image-preview',
-      'gemini-2.5-flash-image',
-    ]);
-    if (imageModel && !ALLOWED_MODELS.has(imageModel)) {
-      imageModel = undefined;
-    }
+    // Allowlist — only OpenAI models are valid overrides (Gemini runs via auto chain)
+    const OPENAI_MODELS = new Set(['gpt-image-2', 'gpt-image-1.5']);
+    const useOpenAIDirect = imageModel ? OPENAI_MODELS.has(imageModel) : false;
+    if (!useOpenAIDirect) imageModel = undefined;
 
-    // Validate common
     if (photoBuffers.length === 0) {
       return reply.code(400).send({ error: 'At least 1 photo required', code: 'NO_PHOTOS' });
     }
 
+    const parsed = GenerateImageBodySchema.safeParse({ styles: rawStyles, instructions });
+    if (!parsed.success) {
+      return reply.code(400).send({
+        error: parsed.error.errors[0]?.message ?? 'Invalid input',
+        code: 'VALIDATION_ERROR',
+      });
+    }
+
+    const { styles } = parsed.data;
     const primary = photoBuffers[0]!;
     const referenceImageBuffers = photoBuffers.slice(1).map(p => p.buffer);
 
-    // Light analysis — shared across image and video paths
-    let analysis;
+    // ---- Light analysis -------------------------------------------------------
+    let analysis: LightAnalysis;
     try {
       analysis = await lightAnalyze([primary.buffer, ...referenceImageBuffers]);
     } catch (err) {
-      app.log.warn({ err }, 'Admin test: lightAnalyze failed — continuing with fallback');
+      app.log.warn({ err }, 'Admin test: lightAnalyze failed — using fallback');
       analysis = {
         productName: 'product',
         productCategory: 'other',
@@ -663,22 +638,95 @@ export async function adminTestRoutes(app: FastifyInstance): Promise<void> {
       };
     }
 
-    // ── IMAGE PATH ──────────────────────────────────────────────────────────
+    // ---- Direct OpenAI path (A/B testing — bypasses Gemini entirely) ----------
+    if (useOpenAIDirect && imageModel) {
+      const generationTasks = styles.map(async (style) => {
+        const styleStart = Date.now();
+        const prompt = buildBetaPrompt(style, analysis.productName, instructions);
 
-    const parsed = GenerateImageBodySchema.safeParse({ styles: rawStyles, instructions });
-    if (!parsed.success) {
-      return reply.code(400).send({
-        error: parsed.error.errors[0]?.message ?? 'Invalid input',
-        code: 'VALIDATION_ERROR',
+        try {
+          // Preprocess primary
+          let processedBuffer: Buffer;
+          try {
+            const pp = await preprocessImage(primary.buffer);
+            processedBuffer = pp.buffer;
+          } catch {
+            processedBuffer = primary.buffer;
+          }
+
+          const gen = await openaiGenerateImage({
+            inputImageBuffer: processedBuffer,
+            prompt,
+            referenceImageBuffers: referenceImageBuffers.length > 0 ? referenceImageBuffers : undefined,
+            model: imageModel as OpenAIModelId,
+          });
+
+          // Upload to Supabase
+          const outputPath = `admin-openai-${imageModel}-${Date.now()}.jpg`;
+          const outputUrl = await uploadFile(Buckets.PROCESSED_IMAGES, outputPath, gen.imageBuffer, 'image/jpeg');
+
+          return {
+            style,
+            outputUrl,
+            tier: 3,
+            model: imageModel,
+            pipeline: `openai-${imageModel}`,
+            costInr: imageModel === 'gpt-image-2' ? 21.00 : 10.00,
+            durationMs: Date.now() - styleStart,
+            prompt,
+            error: null as string | null,
+          };
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          app.log.error({ err, style }, 'Admin test: OpenAI generation failed');
+          return {
+            style,
+            outputUrl: null as string | null,
+            tier: null,
+            model: imageModel,
+            pipeline: null,
+            costInr: imageModel === 'gpt-image-2' ? 21.00 : 10.00,
+            durationMs: Date.now() - styleStart,
+            prompt,
+            error: errMsg,
+          };
+        }
+      });
+
+      const results = await Promise.all(generationTasks);
+      const totalCostInr = Number(results.reduce((sum, r) => sum + (r.costInr ?? 0), 0).toFixed(2));
+      const grandTotalInr = Number((totalCostInr + 0.30).toFixed(2));
+      const marginInr = Number((99 - grandTotalInr).toFixed(2));
+      const marginPct = Number(((marginInr / 99) * 100).toFixed(1));
+
+      return reply.send({
+        analysis,
+        results,
+        costSummary: {
+          grandTotalInr,
+          totalCostInr,
+          overheadCostInr: 0.30,
+          marginInr,
+          marginPct,
+          needsRefund: false,
+        },
       });
     }
 
-    const { styles } = parsed.data;
+    // ---- Production chain path (Pro → NB2 → GPT-2) ---------------------------
 
-    // Upload primary photo to Supabase
+    // Preprocess primary buffer
+    let primaryBuffer: Buffer;
+    try {
+      const pp = await preprocessImage(primary.buffer);
+      primaryBuffer = pp.buffer;
+    } catch {
+      primaryBuffer = primary.buffer;
+    }
+
+    // Upload primary to Supabase (needed for imageUrl in params)
     const storagePath = `admin-test-${Date.now()}.jpg`;
     let imageUrl: string;
-
     try {
       imageUrl = await uploadFile('raw-images', storagePath, primary.buffer, primary.mimetype);
     } catch (err) {
@@ -689,57 +737,37 @@ export async function adminTestRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
-    // Run 3 style generations in parallel
-    const generationTasks = styles.map(async (style) => {
-      const styleStart = Date.now();
+    // Run production chain
+    let productionResult;
+    try {
+      productionResult = await processOrderProduction({
+        imageUrl,
+        imageBuffers: [primaryBuffer, ...referenceImageBuffers],
+        styles,
+        userInstructions: instructions,
+        voiceInstructions: instructions,
+        productCategory: analysis.productCategory,
+      });
+    } catch (err) {
+      app.log.error({ err }, 'Admin test: processOrderProduction failed');
+      return reply.code(500).send({
+        error: err instanceof Error ? err.message : 'Production pipeline failed',
+        code: 'PIPELINE_FAILED',
+      });
+    }
 
-      let prompt: string;
-      try {
-        prompt = getStylePromptV5(style, 'DIRECT', analysis, instructions);
-      } catch {
-        prompt = '(prompt generation failed)';
-      }
-
-      try {
-        const result = await processImageNeverFail({
-          imageUrl,
-          style,
-          productCategory: analysis.productCategory,
-          voiceInstructions: instructions,
-          referenceImageBuffers: referenceImageBuffers.length > 0 ? referenceImageBuffers : undefined,
-          modelOverride: imageModel,
-          pipelineMode,
-        });
-
-        return {
-          style,
-          outputUrl: result.outputUrl,
-          qaScore: result.qaScore,
-          pipeline: result.pipeline,
-          tier: result.tier,
-          tierReason: result.tierReason,
-          durationMs: result.durationMs ?? (Date.now() - styleStart),
-          prompt,
-          error: null as string | null,
-        };
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        app.log.error({ err, style }, 'Admin test: generation failed for style');
-        return {
-          style,
-          outputUrl: null as string | null,
-          qaScore: 0,
-          pipeline: null as string | null,
-          tier: null as number | null,
-          tierReason: null as string | null,
-          durationMs: Date.now() - styleStart,
-          prompt,
-          error: errMsg,
-        };
-      }
-    });
-
-    const results = await Promise.all(generationTasks);
+    // Map StyleResult[] → API response shape (matches what renderImageResult expects)
+    const results = productionResult.styleResults.map(r => ({
+      style: r.style,
+      outputUrl: r.outputUrl,
+      tier: r.tier === 'refund' ? null : r.tier,
+      model: r.model,
+      pipeline: r.model,
+      costInr: r.costInr,
+      durationMs: r.durationMs,
+      prompt: r.prompt,
+      error: r.error,
+    }));
 
     app.log.info(
       {
@@ -747,10 +775,23 @@ export async function adminTestRoutes(app: FastifyInstance): Promise<void> {
         imageUrl,
         resultCount: results.length,
         successCount: results.filter(r => !r.error).length,
+        grandTotalInr: productionResult.grandTotalInr,
+        marginInr: productionResult.marginInr,
       },
       'Admin test: generation complete',
     );
 
-    return reply.send({ analysis, results });
+    return reply.send({
+      analysis,
+      results,
+      costSummary: {
+        grandTotalInr: productionResult.grandTotalInr,
+        totalCostInr: productionResult.totalCostInr,
+        overheadCostInr: productionResult.overheadCostInr,
+        marginInr: productionResult.marginInr,
+        marginPct: productionResult.marginPct,
+        needsRefund: productionResult.needsRefund,
+      },
+    });
   });
 }

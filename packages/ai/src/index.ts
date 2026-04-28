@@ -3,10 +3,9 @@
  *
  * Processes product photos into professional images for Indian SMB sellers
  * using a smart AI-driven approach:
- *   - Product Analysis: Gemini 2.5 Flash deep product understanding
- *   - Pipeline: V5 Gemini image generation with QA gate
- *   - Never-fail orchestrator: NB2 → OpenAI fallback chain
- *   - QA: Gemini comparative check (input vs output fidelity)
+ *   - Production pipeline: Beta prompt + Pro → Flash → GPT-2 fallback chain
+ *   - Never-fail orchestrator: thin wrapper over production.ts
+ *   - QA: deterministic sharp-based checks (no LLM QA gate in production)
  *   - Transcription: Groq Whisper Turbo with Sarvam AI fallback
  *   - Instruction parsing: Gemini 2.5 Flash Lite
  */
@@ -15,14 +14,21 @@
 // Pipeline — main entry point (production)
 // ---------------------------------------------------------------------------
 
-// Never-fail pipeline — production entry point
 export {
   processImageNeverFail,
   type NeverFailResult,
   type NeverFailParams,
 } from './pipeline/never-fail-pipeline.js';
 
-// Shared pipeline types (extracted from orchestrator.ts V1)
+export {
+  processOrderProduction,
+  processStyleProduction,
+  type ProductionParams,
+  type ProductionResult,
+  type StyleResult,
+} from './pipeline/production.js';
+
+// Shared pipeline types
 export type { ProcessImageParams, ProcessImageResult } from './pipeline/_common/types.js';
 
 // ---------------------------------------------------------------------------
@@ -30,30 +36,20 @@ export type { ProcessImageParams, ProcessImageResult } from './pipeline/_common/
 // ---------------------------------------------------------------------------
 
 export {
-  combinedQualityCheck,
-  type CombinedQAResult,
-} from './qa/combined-qa.js';
-
-export {
   runDeterministicChecks,
   type DeterministicResult,
 } from './qa/deterministic-checks.js';
 
-// V5 support modules
+// ---------------------------------------------------------------------------
+// Analysis + prompt building
+// ---------------------------------------------------------------------------
+
 export {
   lightAnalyze,
   type LightAnalysis,
 } from './pipeline/light-analyzer.js';
 
-export {
-  getStylePromptV5,
-  buildSkinnyPrompt,
-} from './pipeline/style-prompts-v5.js';
-
-export {
-  compositeProductOntoBackground,
-  type CompositeOptions,
-} from './pipeline/composite-engine.js';
+export { buildBetaPrompt } from './pipeline/style-prompts-v5.js';
 
 // ---------------------------------------------------------------------------
 // Transcription
@@ -101,3 +97,13 @@ export {
 export {
   downloadBuffer,
 } from './pipeline/fallback.js';
+
+// ---------------------------------------------------------------------------
+// OpenAI image generation (admin A/B testing)
+// ---------------------------------------------------------------------------
+
+export {
+  openaiGenerateImage,
+  type OpenAIGenerateParams,
+  type OpenAIModelId,
+} from './pipeline/openai-generate.js';
