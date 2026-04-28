@@ -26,11 +26,19 @@ import type { GeminiGenerateResult } from './gemini-generate.js';
 // Types
 // ---------------------------------------------------------------------------
 
+export type { OpenAIModelId };
+
 export interface OpenAIGenerateParams {
   inputImageBuffer: Buffer;
   prompt: string;
   /** Optional reference images (up to 16 — gpt-image-2 limit). */
   referenceImageBuffers?: Buffer[];
+  /**
+   * Force a specific OpenAI model — disables the auto-chain fallback.
+   * Admin testing only. When omitted the default chain runs (gpt-image-2 →
+   * gpt-image-1.5 → gpt-image-1).
+   */
+  model?: OpenAIModelId;
 }
 
 // ---------------------------------------------------------------------------
@@ -110,6 +118,16 @@ export async function openaiGenerateImage(
 ): Promise<GeminiGenerateResult> {
   const { inputImageBuffer, prompt, referenceImageBuffers } = params;
   const startMs = Date.now();
+
+  // Admin testing: caller pinned a specific model — skip chain, single attempt.
+  if (params.model) {
+    return attemptGenerationWithModel(params.model, {
+      inputImageBuffer,
+      prompt,
+      referenceImageBuffers,
+      startMs,
+    });
+  }
 
   // Try each model in the chain. Only 403 verification errors step down.
   // Other errors bubble up to the caller.

@@ -16,7 +16,7 @@ import { GoogleGenAI } from '@google/genai';
 import { getProviderKey } from '@autmn/keypool';
 import { preprocessImage } from './preprocess.js';
 import { lightAnalyze, type LightAnalysis } from './light-analyzer.js';
-import { getStylePromptV5 } from './style-prompts-v5.js';
+import { getStylePromptV5, buildSkinnyPrompt } from './style-prompts-v5.js';
 import { generateCreativeBrief } from './art-director.js';
 import { geminiGenerateImage } from './gemini-generate.js';
 import { compositeProductOntoBackground } from './composite-engine.js';
@@ -29,7 +29,7 @@ import {
 } from './fallback.js';
 import { runDeterministicChecks } from '../qa/deterministic-checks.js';
 import { combinedQualityCheck } from '../qa/combined-qa.js';
-import type { ProcessImageParams, ProcessImageResult } from './orchestrator.js';
+import type { ProcessImageParams, ProcessImageResult } from './_common/types.js';
 
 // ---------------------------------------------------------------------------
 // QA thresholds — mirror V3 orchestrator (QA_PASS_SCORE / QA_FIDELITY_MIN).
@@ -88,6 +88,15 @@ export interface ProcessImageV5Params extends ProcessImageParams {
    *  Used by the 3-tier never-fail architecture to route Tier 1 (Pro) vs Tier 2 (Flash)
    *  through the same V5 code path with a different model. */
   modelOverride?: string;
+  /**
+   * Pipeline cost/quality mode.
+   * - 'full' (default): 4 parallel candidates + retry + best-of QA. Max quality.
+   * - 'lean': 1 candidate, 1 attempt, best-of-1 QA, fall to Tier 2 on fail. ~₹15/order.
+   * - 'skinny': 1 candidate, one-liner prompt, NO Art Director, NO composition seed,
+   *   NO QA gate. Ships whatever Gemini returns. Pure baseline — "what if we just
+   *   ask nicely?" Intended only for control testing, not production.
+   */
+  pipelineMode?: 'full' | 'lean' | 'skinny';
 }
 
 type Track = 'COMPOSITE' | 'DIRECT';
@@ -512,32 +521,48 @@ async function runDirectTrack(
   referenceBuffers: Buffer[] | undefined,
   temperatures: number[],
   modelOverride?: string,
+  pipelineMode: 'full' | 'lean' | 'skinny' = 'full',
 ): Promise<CandidateSelection> {
-  // Day 2 (2026-04-23): Art Director LLM writes a custom creative brief for
-  // THIS product × style before generation. Replaces the static SCHEMA scene
-  // description when it succeeds. Falls back to static on any failure — the
-  // pipeline never blocks on AD unavailability.
-  const adResult = await generateCreativeBrief({
-    style,
-    analysis,
-    userInstructions: voiceInstructions,
-  });
+  let prompt: string;
 
-  const prompt = getStylePromptV5(
-    style,
-    'DIRECT',
-    analysis,
-    voiceInstructions,
-    adResult.brief ?? undefined,
-  );
+  if (pipelineMode === 'skinny') {
+    // Skinny: no Art Director, no composition library, no style scene recipe.
+    // One-line prompt, trust the model to do its thing. Control test.
+    prompt = buildSkinnyPrompt(style, analysis.productName);
+    console.info(JSON.stringify({
+      event: 'v5_prompt_built',
+      style,
+      pipelineMode: 'skinny',
+      promptLength: prompt.length,
+    }));
+  } else {
+    // Day 2 (2026-04-23): Art Director LLM writes a custom creative brief for
+    // THIS product × style before generation. Replaces the static SCHEMA scene
+    // description when it succeeds. Falls back to static on any failure — the
+    // pipeline never blocks on AD unavailability.
+    const adResult = await generateCreativeBrief({
+      style,
+      analysis,
+      userInstructions: voiceInstructions,
+    });
 
-  console.info(JSON.stringify({
-    event: 'v5_prompt_built',
-    style,
-    usedArtDirector: adResult.brief !== null,
-    artDirectorSource: adResult.source,
-    promptLength: prompt.length,
-  }));
+    prompt = getStylePromptV5(
+      style,
+      'DIRECT',
+      analysis,
+      voiceInstructions,
+      adResult.brief ?? undefined,
+    );
+
+    console.info(JSON.stringify({
+      event: 'v5_prompt_built',
+      style,
+      pipelineMode,
+      usedArtDirector: adResult.brief !== null,
+      artDirectorSource: adResult.source,
+      promptLength: prompt.length,
+    }));
+  }
 
   if (temperatures.length === 1) {
     const result = await geminiGenerateImage({
@@ -717,6 +742,11 @@ export async function processProductImageV5(
   // ---------------------------------------------------------------------------
 
   const checkFidelity = !isWithModel;
+  const pipelineMode: 'full' | 'lean' | 'skinny' = params.pipelineMode ?? 'full';
+  // Full:   4 parallel candidates + retry + best-of QA (current production behavior)
+  // Lean:   1 candidate, 1 attempt, QA gate still evaluated (falls to Tier 2 on fail)
+  // Skinny: 1 candidate, 1 attempt, NO QA gate at all — ship whatever Gemini returns
+  const maxAttempts = pipelineMode === 'full' ? 2 : 1;
 
   let bestBuffer: Buffer | null = null;
   let bestScore = -1;
@@ -725,11 +755,11 @@ export async function processProductImageV5(
   let qaPass = false;
   let attempts = 0;
 
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     attempts = attempt;
     const isRetry = attempt > 1;
 
-    console.info(JSON.stringify({ event: 'v5_generation_attempt', attempt, track, model: modelOverride ?? 'env_default' }));
+    console.info(JSON.stringify({ event: 'v5_generation_attempt', attempt, track, model: modelOverride ?? 'env_default', pipelineMode }));
 
     let candidateBuffer: Buffer | null = null;
 
@@ -745,7 +775,9 @@ export async function processProductImageV5(
       // More variants → higher chance at least one clears the new fidelity
       // threshold of 35. Latency unchanged (runs in parallel). Cost doubles
       // — justified by expected Tier-1 hit-rate lift from ~70% to ~88%+.
-      const temperatures = isRetry ? [0.3, 0.5] : [0.3, 0.4, 0.5, 0.6];
+      const temperatures = pipelineMode === 'lean'
+        ? [0.4]
+        : (isRetry ? [0.3, 0.5] : [0.3, 0.4, 0.5, 0.6]);
       const selection = await runDirectTrack(
         croppedBuffer,
         style,
@@ -754,6 +786,7 @@ export async function processProductImageV5(
         params.referenceImageBuffers,
         temperatures,
         modelOverride,
+        pipelineMode,
       );
 
       // Composite score gate: if the best candidate from this attempt didn't
@@ -803,6 +836,18 @@ export async function processProductImageV5(
         fallback: 'using_unprocessed_buffer',
       }));
       postProcessed = candidateBuffer;
+    }
+
+    // Skinny mode: skip QA entirely. Ship whatever came back, pretend it's great.
+    // This is the control test — measures raw model output with no safety net.
+    if (pipelineMode === 'skinny') {
+      bestBuffer = postProcessed;
+      bestScore = 100;
+      bestFidelityScore = 100;
+      bestQa = null;
+      qaPass = true;
+      console.info(JSON.stringify({ event: 'v5_skinny_no_qa_ship_as_is' }));
+      break;
     }
 
     // QA check — full fidelity-aware scoring

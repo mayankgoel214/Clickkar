@@ -409,12 +409,22 @@ export async function runDeterministicChecks(
     // Non-fatal
   }
 
-  // ---- Check 0F: Color histogram distance (color shift warning) ----
+  // ---- Check 0F: Color histogram distance (color shift) ----
   try {
     result.colorDistance = await computeColorDistance(inputBuffer, outputBuffer);
 
-    // Color distance is a WARNING, not a hard fail — scene change naturally shifts colors
-    // But extreme distance means product colors changed
+    // V1.2 — severe color shift becomes a hard fail. Threshold 2.5 catches
+    // catastrophic identity drift (e.g. white Monster Zero Ultra → black
+    // regular Monster) without false-positiving normal scene background
+    // changes (red table → blue splash, green velvet → red velvet).
+    if (result.colorDistance > 2.5) {
+      result.pass = false;
+      result.failReason = `severe_color_shift:colorDistance=${result.colorDistance.toFixed(2)}`;
+      return result;
+    }
+
+    // Mild color shift — warning only. Scene background changes naturally
+    // produce some shift; we only flag if it's notable.
     if (result.colorDistance > 1.0) {
       result.warnings.push(`Product colors may have shifted significantly (colorDistance=${result.colorDistance.toFixed(2)}). Ensure the product's EXACT original colors are preserved.`);
     }
