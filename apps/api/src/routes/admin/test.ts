@@ -197,6 +197,16 @@ function buildHtml(adminKey: string): string {
       <p class="text-xs text-gray-400 uppercase tracking-wide mb-2 font-semibold">Gemini understood this product as:</p>
       <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm" id="analysis-grid"></div>
     </div>
+    <!-- V1.2.1: Parsed instructions block -->
+    <div id="parsed-instructions-block" class="hidden mt-5 border-t border-gray-100 pt-4">
+      <p class="text-xs text-emerald-600 uppercase tracking-wide mb-2 font-semibold">Instructions parsed (per-style routing)</p>
+      <div id="parsed-instructions-body"></div>
+    </div>
+    <!-- V1.1: Creative Brief block -->
+    <div id="brief-block" class="hidden mt-5 border-t border-gray-100 pt-4">
+      <p class="text-xs text-indigo-500 uppercase tracking-wide mb-2 font-semibold">Creative Brief (per-product art direction)</p>
+      <div id="brief-body"></div>
+    </div>
   </div>
 
   <!-- Results -->
@@ -355,6 +365,10 @@ async function runGeneration() {
   progressArea.classList.remove('hidden');
   resultsArea.classList.add('hidden');
   analysisBlock.classList.add('hidden');
+  const briefBlock = document.getElementById('brief-block');
+  if (briefBlock) briefBlock.classList.add('hidden');
+  const piBlock = document.getElementById('parsed-instructions-block');
+  if (piBlock) piBlock.classList.add('hidden');
   costSummary.classList.add('hidden');
 
   progressText.textContent = 'Photo mil gayi! 3 ads bana rahe hain...';
@@ -415,6 +429,64 @@ async function runGeneration() {
     });
   }
 
+  // V1.2.1: Show parsed instructions (per-style routing)
+  if (data.parsedInstructions) {
+    const pi = data.parsedInstructions;
+    const piBlock = document.getElementById('parsed-instructions-block');
+    const piBody  = document.getElementById('parsed-instructions-body');
+    if (piBlock && piBody) {
+      piBlock.classList.remove('hidden');
+      var piHtml = '<div class="bg-emerald-50 border border-emerald-100 rounded-lg p-3 mb-2">' +
+        '<p class="text-xs text-emerald-600 mb-1">Confidence: <span class="font-medium">' + (pi.confidence * 100).toFixed(0) + '%</span></p>' +
+        '</div>';
+      if (pi.globalInstruction) {
+        piHtml += '<div class="bg-emerald-50 border border-emerald-100 rounded-lg p-3 mb-2">' +
+          '<p class="text-xs text-emerald-600 mb-1">Apply to ALL styles</p>' +
+          '<p class="text-sm text-gray-800">' + escHtml(pi.globalInstruction) + '</p>' +
+          '</div>';
+      }
+      Object.entries(pi.perStyle).forEach(([style, instr]) => {
+        if (instr && instr.trim()) {
+          piHtml += '<div class="bg-gray-50 border border-gray-200 rounded-lg p-3 mb-2">' +
+            '<p class="text-xs text-gray-400 mb-1">' + escHtml(style) + '</p>' +
+            '<p class="text-sm text-gray-800">' + escHtml(instr) + '</p>' +
+            '</div>';
+        }
+      });
+      const ignoredStyles = Object.entries(pi.perStyle).filter(([_, v]) => !v || !v.trim()).map(([s]) => s);
+      if (ignoredStyles.length > 0 && !pi.globalInstruction) {
+        piHtml += '<p class="text-xs text-gray-400 mt-1">No instruction for: ' + ignoredStyles.join(', ') + '</p>';
+      }
+      piBody.innerHTML = piHtml;
+    }
+  }
+
+  // V1.1: Show creative brief (per-product art direction)
+  if (data.creativeBrief) {
+    const cb = data.creativeBrief;
+    const briefBlock = document.getElementById('brief-block');
+    const briefBody = document.getElementById('brief-body');
+    if (briefBlock && briefBody) {
+      briefBlock.classList.remove('hidden');
+      var briefHtml = '<div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">' +
+        '<div class="bg-indigo-50 border border-indigo-100 rounded-lg p-3"><p class="text-xs text-indigo-500 mb-0.5">Product type</p><p class="text-sm text-gray-800">' + escHtml(cb.profile.productType) + '</p></div>' +
+        '<div class="bg-indigo-50 border border-indigo-100 rounded-lg p-3"><p class="text-xs text-indigo-500 mb-0.5">Brand identity</p><p class="text-sm text-gray-800">' + escHtml(cb.profile.brandIdentity) + '</p></div>' +
+        '<div class="bg-indigo-50 border border-indigo-100 rounded-lg p-3"><p class="text-xs text-indigo-500 mb-0.5">Target audience</p><p class="text-sm text-gray-800">' + escHtml(cb.profile.targetAudience) + '</p></div>' +
+        '<div class="bg-indigo-50 border border-indigo-100 rounded-lg p-3"><p class="text-xs text-indigo-500 mb-0.5">Cultural fit</p><p class="text-sm text-gray-800">' + escHtml(cb.profile.culturalFit) + '</p></div>' +
+        '<div class="bg-indigo-50 border border-indigo-100 rounded-lg p-3 md:col-span-2"><p class="text-xs text-indigo-500 mb-0.5">Uniqueness</p><p class="text-sm text-gray-800">' + escHtml(cb.profile.uniqueness) + '</p></div>' +
+        '</div>';
+      briefHtml += '<p class="text-xs uppercase tracking-wide text-gray-400 mb-2">Per-style direction</p>';
+      Object.entries(cb.directions).forEach(([style, dir]) => {
+        briefHtml += '<div class="bg-gray-50 border border-gray-200 rounded-lg p-3 mb-2">' +
+          '<p class="text-xs text-gray-400 mb-1">' + escHtml(style) + '</p>' +
+          '<p class="text-sm text-gray-800 mb-1"><span class="font-medium">Scene:</span> ' + escHtml(dir.sceneDirection) + '</p>' +
+          '<p class="text-sm text-gray-700"><span class="font-medium">Mood:</span> ' + escHtml(dir.moodAnchor) + '</p>' +
+          '</div>';
+      });
+      briefBody.innerHTML = briefHtml;
+    }
+  }
+
   progressArea.classList.add('hidden');
   resultsArea.classList.remove('hidden');
   resultsGrid.innerHTML = '';
@@ -427,14 +499,14 @@ async function runGeneration() {
   // Cost summary
   if (data.costSummary) {
     const cs = data.costSummary;
-    const overBudget = cs.grandTotalInr > 50;
+    const overBudget = cs.totalCostInr > 50;
     costSummary.classList.remove('hidden');
     costSummary.className = 'text-sm font-medium rounded-lg px-3 py-1.5 border ' +
       (overBudget
         ? 'bg-red-50 border-red-200 text-red-800'
         : 'bg-green-50 border-green-200 text-green-800');
     costSummary.textContent =
-      'Cost: \\u20B9' + cs.grandTotalInr.toFixed(2) +
+      'Cost: \\u20B9' + cs.totalCostInr.toFixed(2) +
       ' | Margin: \\u20B9' + cs.marginInr.toFixed(2) +
       ' (' + cs.marginPct.toFixed(1) + '%)' +
       (cs.needsRefund ? ' | REFUND NEEDED' : '');
@@ -695,17 +767,14 @@ export async function adminTestRoutes(app: FastifyInstance): Promise<void> {
 
       const results = await Promise.all(generationTasks);
       const totalCostInr = Number(results.reduce((sum, r) => sum + (r.costInr ?? 0), 0).toFixed(2));
-      const grandTotalInr = Number((totalCostInr + 0.30).toFixed(2));
-      const marginInr = Number((99 - grandTotalInr).toFixed(2));
+      const marginInr = Number((99 - totalCostInr).toFixed(2));
       const marginPct = Number(((marginInr / 99) * 100).toFixed(1));
 
       return reply.send({
         analysis,
         results,
         costSummary: {
-          grandTotalInr,
           totalCostInr,
-          overheadCostInr: 0.30,
           marginInr,
           marginPct,
           needsRefund: false,
@@ -775,7 +844,7 @@ export async function adminTestRoutes(app: FastifyInstance): Promise<void> {
         imageUrl,
         resultCount: results.length,
         successCount: results.filter(r => !r.error).length,
-        grandTotalInr: productionResult.grandTotalInr,
+        totalCostInr: productionResult.totalCostInr,
         marginInr: productionResult.marginInr,
       },
       'Admin test: generation complete',
@@ -783,11 +852,11 @@ export async function adminTestRoutes(app: FastifyInstance): Promise<void> {
 
     return reply.send({
       analysis,
+      creativeBrief: productionResult.creativeBrief,
+      parsedInstructions: productionResult.parsedInstructions,
       results,
       costSummary: {
-        grandTotalInr: productionResult.grandTotalInr,
         totalCostInr: productionResult.totalCostInr,
-        overheadCostInr: productionResult.overheadCostInr,
         marginInr: productionResult.marginInr,
         marginPct: productionResult.marginPct,
         needsRefund: productionResult.needsRefund,

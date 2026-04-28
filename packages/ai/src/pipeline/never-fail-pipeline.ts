@@ -1,23 +1,24 @@
 /**
- * Never-fail pipeline — thin wrapper over the production chain.
+ * Never-fail pipeline — thin wrapper over the V1 production chain.
  *
  * The worker calls processImageNeverFail() per style. This module keeps the
- * same external shape (NeverFailParams / NeverFailResult) so the worker needs
- * no changes, while routing all generation through production.ts internally.
+ * external shape (NeverFailParams / NeverFailResult) so the worker needs no
+ * changes, while routing all generation through production.ts internally.
  *
- * Tier mapping (from production.ts):
- *   StyleResult.tier 1 | 2 | 3 → NeverFailResult.tier 1 | 2 | 3
+ * Tier mapping (from production.ts V1):
+ *   StyleResult.tier 1         → NeverFailResult.tier 1 (Pro succeeded)
+ *   StyleResult.tier 2         → NeverFailResult.tier 2 (Pro failed, GPT-2 succeeded)
  *   StyleResult.tier 'refund'  → throws Error('[needs_refund: true] ...')
  *
  * pipelineMode and modelOverride are still accepted on the type for admin-UI
- * backward compatibility, but are ignored in the production path. All modes
- * now run the same Beta prompt + Pro → Flash → GPT-2 chain.
+ * backward compatibility, but are ignored. All paths run the same V1 chain
+ * (Beta prompt + Pro → GPT-2 → refund).
  */
 
-import { downloadBuffer, uploadToStorage } from './fallback.js';
+import { downloadBuffer } from './fallback.js';
 import { preprocessImage } from './preprocess.js';
-import { lightAnalyze } from './light-analyzer.js';
 import { processStyleProduction } from './production.js';
+import { generateCreativeBrief } from './creative-brief.js';
 import type { ProcessImageParams } from './_common/types.js';
 
 // ---------------------------------------------------------------------------
@@ -30,13 +31,13 @@ export interface NeverFailParams extends ProcessImageParams {
   /** Kept for backward compat — not used in production routing. */
   profileV4?: unknown;
   /**
-   * Override the Tier 1 Gemini image model — kept for admin UI compat.
-   * Ignored in production (always runs the full Pro → Flash → GPT-2 chain).
+   * Override the Tier 1 image model — kept for admin UI compat.
+   * Ignored in V1 (always runs Pro → GPT-2 chain).
    */
   modelOverride?: string;
   /**
    * Pipeline mode — kept for backward compat.
-   * Ignored in production — all modes run Beta prompt.
+   * Ignored in V1 — all modes run the Beta prompt.
    */
   pipelineMode?: 'full' | 'lean' | 'skinny' | 'beta';
 }
@@ -48,11 +49,12 @@ export interface NeverFailResult {
   /** Always undefined — video generation removed. Kept for worker compatibility. */
   videoUrl?: string;
   cutoutUrl?: string;
-  /** Placeholder — no QA gate in production. */
+  /** Placeholder — no QA gate in V1. */
   qaScore: number;
   pipeline: string;
   attempts: number;
   durationMs: number;
+  /** 1 = Pro, 2 = GPT-2. (Tier 4 retained on type for old callers but unused in V1.) */
   tier: 1 | 2 | 3 | 4;
   tierReason?: string;
   outputBuffer?: Buffer;
@@ -84,7 +86,7 @@ export async function processImageNeverFail(
     console.info(JSON.stringify({
       event: 'never_fail_mode_ignored',
       pipelineMode: params.pipelineMode,
-      note: 'All modes route to production Beta chain (Pro → Flash → GPT-2). pipelineMode is deprecated.',
+      note: 'V1 ignores pipelineMode. All paths run Beta + Pro → GPT-2 → refund.',
     }));
   }
 
@@ -92,7 +94,7 @@ export async function processImageNeverFail(
     console.info(JSON.stringify({
       event: 'never_fail_model_override_ignored',
       modelOverride: params.modelOverride,
-      note: 'modelOverride is deprecated. Production always uses the full tier chain.',
+      note: 'V1 ignores modelOverride. Production always uses the full tier chain.',
     }));
   }
 
@@ -114,46 +116,46 @@ export async function processImageNeverFail(
     primaryBuffer = rawBuffer;
   }
 
-  // ---- Light analysis (best-effort — used for product name in prompt) --------
-  let productName = 'product';
-  try {
-    const allBuffers = [primaryBuffer, ...(params.referenceImageBuffers ?? [])];
-    const analysis = await lightAnalyze(allBuffers);
-    productName = analysis.productName;
-  } catch {
-    // Non-fatal — Beta prompt doesn't use product name anyway (intentional)
-  }
+  // ---- V1.1: Creative Brief (per-product art direction) --------------------
+  // Worker calls processImageNeverFail per-style, so we generate a brief for
+  // just this one style. Cost ~₹0.10, latency ~3s. On failure, falls back to
+  // V1 base Beta prompt (no breaking change).
+  const allBuffers = [primaryBuffer, ...(params.referenceImageBuffers ?? [])];
+  const brief = await generateCreativeBrief({
+    buffers: allBuffers,
+    styles: [style],
+    productCategory: params.productCategory,
+  });
 
-  // ---- Route to production chain --------------------------------------------
+  // ---- Route to V1.1 production chain ---------------------------------------
   const styleResult = await processStyleProduction({
     style,
     primaryBuffer,
     referenceBuffers: params.referenceImageBuffers ?? [],
-    productName,
+    productCategory: params.productCategory,
     userInstructions: params.voiceInstructions,
+    artDirection: brief?.directions[style],
   });
 
   // ---- Map to NeverFailResult ------------------------------------------------
   if (styleResult.tier === 'refund') {
     throw new Error(
-      `[needs_refund: true] All 3 AI tiers exhausted for style "${style}". Last error: ${styleResult.error ?? 'unknown'}`,
+      `[needs_refund: true] All AI tiers exhausted for style "${style}". Last error: ${styleResult.error ?? 'unknown'}`,
     );
   }
 
-  // tier is 1 | 2 | 3 here (not 'refund')
-  const tier = styleResult.tier as 1 | 2 | 3;
+  // tier is 1 | 2 here (refund handled above)
+  const tier = styleResult.tier;
 
   return {
     outputUrl: styleResult.outputUrl!,
-    qaScore: 100, // No QA gate in production
+    qaScore: 100, // No QA gate in V1
     pipeline: styleResult.model,
     attempts: tier,
     durationMs: Date.now() - totalStart,
     tier,
     tierReason: tier === 1
       ? 'Pro succeeded'
-      : tier === 2
-        ? 'Pro failed — Flash succeeded'
-        : 'Both Gemini tiers failed — GPT-2 succeeded',
+      : 'Pro failed — GPT-2 succeeded',
   };
 }

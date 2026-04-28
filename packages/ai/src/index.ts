@@ -28,6 +28,13 @@ export {
   type StyleResult,
 } from './pipeline/production.js';
 
+export {
+  generateCreativeBrief,
+  type CreativeBrief,
+  type ProductProfile,
+  type StyleDirection,
+} from './pipeline/creative-brief.js';
+
 // Shared pipeline types
 export type { ProcessImageParams, ProcessImageResult } from './pipeline/_common/types.js';
 
@@ -49,7 +56,7 @@ export {
   type LightAnalysis,
 } from './pipeline/light-analyzer.js';
 
-export { buildBetaPrompt } from './pipeline/style-prompts-v5.js';
+export { buildBetaPrompt, type StyleArtDirection } from './pipeline/style-prompts-v5.js';
 
 // ---------------------------------------------------------------------------
 // Transcription
