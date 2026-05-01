@@ -175,7 +175,7 @@ Then hit `http://localhost:3001/admin/test?key=<ADMIN_SECRET>` and run a generat
 
 ## Studio context
 
-Autmn (the studio) ships one product per month, India-first, $0 budget except Claude Max. See `~/.claude/CLAUDE.md` for the Studio Charter — load-bearing rules:
+Autmn (the studio) ships one product per month, India-first, $0 budget except Claude Max. The Studio Charter + 25 specialist agents + handbook all live in a SECOND GitHub repo: **[mayankgoel214/autmn-dotfiles](https://github.com/mayankgoel214/autmn-dotfiles)** — run its `install.sh` on a new machine to symlink everything into `~/.claude/`. See `~/.claude/CLAUDE.md` for the Studio Charter — load-bearing rules:
 - All non-trivial tasks go through `router` agent (not directly)
 - No subscriptions until ₹10K MRR
 - Mobile-first, WCAG 2.2 AA, GST-compliant invoicing
