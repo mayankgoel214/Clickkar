@@ -271,11 +271,25 @@ export async function handleAwaitingPhoto(
         const { buffer, mimeType } = await downloadMedia(message.mediaId, accessToken);
         const { uploadFile: upload, Buckets: B } = await import('@autmn/storage');
         await upload(B.VOICE_NOTES, `${phoneNumber}/${Date.now()}.ogg`, buffer, mimeType);
-        const { transcribeVoiceNote } = await import('@autmn/ai');
+        const { transcribeVoiceNote, interpretVoiceNote } = await import('@autmn/ai');
         const transcript = await transcribeVoiceNote(buffer, mimeType);
         if (transcript.text) {
-          await prisma.session.update({ where: { phoneNumber }, data: { voiceInstructions: transcript.text.slice(0, 500) } });
-          await wa.sendText(phoneNumber, msgInstructionsAck(lang, transcript.text));
+          const interpreted = await interpretVoiceNote({
+            rawTranscription: transcript.text,
+            language: user.language,
+            currentStep: 'instructions',
+          });
+          if (!interpreted) {
+            await wa.sendText(
+              phoneNumber,
+              lang === 'hi'
+                ? 'आपकी बात पूरी तरह समझ नहीं आई। कृपया दोबारा बोलें या टाइप करके बताएं।'
+                : 'Could not understand clearly. Please type your instruction or try again.',
+            );
+            return;
+          }
+          await prisma.session.update({ where: { phoneNumber }, data: { voiceInstructions: interpreted.intent.slice(0, 500) } });
+          await wa.sendText(phoneNumber, msgInstructionsAck(lang, interpreted.cleaned));
         }
         const freshSession = await prisma.session.findUnique({ where: { phoneNumber } });
         if (freshSession) await advanceToPayment(freshSession, user, wa, lang);
@@ -285,7 +299,7 @@ export async function handleAwaitingPhoto(
         await wa.sendText(
           phoneNumber,
           lang === 'hi'
-            ? 'Voice note samajh nahi aaya. Text mein instructions bhejein ya "done" bolein.'
+            ? 'आपकी बात पूरी तरह समझ नहीं आई। कृपया दोबारा बोलें या टाइप करके बताएं।'
             : "Couldn't understand the voice note. Please send text instructions or say \"done\".",
         );
         // Do NOT advance — let user retry with text or say "done" to skip instructions

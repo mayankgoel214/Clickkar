@@ -1,14 +1,17 @@
 /**
- * Onboarding handlers — styles-first flow.
+ * Onboarding handlers.
  *
- * New users: IDLE → SETUP_LANGUAGE → SETUP_NAME → SETUP_CATEGORY → SETUP_STYLE → AWAITING_PHOTO → payment
- * Returning users: IDLE → (confirm style or SETUP_STYLE) → AWAITING_PHOTO → payment
+ * New users:      IDLE → SETUP_LANGUAGE → SETUP_NAME → AWAITING_PHOTO (category inline)
+ *                 or IDLE → SETUP_LANGUAGE → SETUP_NAME → SETUP_CATEGORY → AWAITING_PHOTO
+ * Returning users: IDLE → profile confirmation (Continue / Change brand / Change category)
+ *                  → AWAITING_PHOTO (styles auto-selected at order time)
  */
 
 import type { WhatsAppClient } from '@autmn/whatsapp';
 import type { Session, User } from '@autmn/db';
 import { prisma } from '@autmn/db';
 import { uploadFile, Buckets } from '@autmn/storage';
+import { detectLanguage } from '@autmn/ai';
 import { transitionTo, updateUser } from '../db-helpers.js';
 import { downloadWhatsAppMedia, mimeToExt } from './instructions.js';
 import {
@@ -17,7 +20,8 @@ import {
   msgSendProductPhotos,
   msgPickStylePack,
 } from '../messages.js';
-import { ListIds, ButtonIds, CATEGORY_STYLE_RECOMMENDATION, OUTPUT_STYLES_PER_ORDER } from '../types.js';
+import { ListIds, ButtonIds, CATEGORY_STYLE_RECOMMENDATION, OUTPUT_STYLES_PER_ORDER, isHindi } from '../types.js';
+import { selectStylesForOrder } from '../auto-styles.js';
 import type { Language } from '../types.js';
 import type { MessageContext } from '../types.js';
 import { logger } from '../logger.js';
@@ -33,8 +37,6 @@ export async function handleIdle(
   wa: WhatsAppClient,
 ): Promise<void> {
   // Guard against stale dispatches — re-read state to ensure we're still IDLE.
-  // Race condition: a button tap queued before payment completes can arrive while
-  // the session is already in PROCESSING, causing phantom "Send your photo" messages.
   const fresh = await prisma.session.findUnique({
     where: { phoneNumber: session.phoneNumber },
     select: { state: true },
@@ -45,63 +47,21 @@ export async function handleIdle(
       phoneNumber: session.phoneNumber,
       currentState: fresh.state,
     }));
-    return; // Session has moved past IDLE — don't show returning user prompts
+    return;
   }
 
   const lang = user.language as Language;
-  const isReturning = Boolean(user.name);
+  const displayName = (user as any).brandName ?? user.name ?? null;
+  const isReturning = Boolean(displayName);
 
-  logger.info('handleIdle called', { phoneNumber: session.phoneNumber, isReturning, lastStyleUsed: user.lastStyleUsed, lang });
+  logger.info('handleIdle called', { phoneNumber: session.phoneNumber, isReturning, lang });
 
-  // Handle button replies from returning user style confirmation
-  // This prevents an infinite loop where button taps re-enter handleIdle in IDLE state
+  // ── Handle button replies (always checked first to prevent re-showing prompts) ──────
   if (message.messageType === 'interactive' && message.buttonReplyId) {
     const buttonId = message.buttonReplyId;
 
-    if (buttonId === ButtonIds.SAME_STYLE && user.lastStyleUsed) {
-      // Restore the previous styleSelections if available, otherwise fall back to lastStyleUsed.
-      // If fewer than OUTPUT_STYLES_PER_ORDER styles are saved, fill remaining slots from the
-      // Smart Pack for the user's category (no style repeated).
-      const prevSession = await prisma.session.findUnique({
-        where: { phoneNumber: session.phoneNumber },
-        select: { styleSelections: true },
-      });
-      const prevSelections = (prevSession?.styleSelections ?? []) as string[];
-
-      let selections: string[];
-      if (prevSelections.length >= OUTPUT_STYLES_PER_ORDER) {
-        selections = prevSelections.slice(0, OUTPUT_STYLES_PER_ORDER);
-      } else {
-        const saved = prevSelections.length > 0 ? prevSelections : [user.lastStyleUsed];
-        selections = fillWithSmartPack(saved, user.businessType ?? null, OUTPUT_STYLES_PER_ORDER);
-      }
-
-      // Atomic guard: only the first handler to claim IDLE→AWAITING_PHOTO proceeds
-      const claimed = await prisma.session.updateMany({
-        where: { phoneNumber: session.phoneNumber, state: 'IDLE' },
-        data: {
-          state: 'AWAITING_PHOTO',
-          stateEnteredAt: new Date(),
-          styleSelection: selections[0] ?? user.lastStyleUsed,
-          styleSelections: selections,
-          stylePickStep: 0,
-          imageMediaIds: [],
-          imageStorageUrls: [],
-          voiceInstructions: null,
-          currentOrderId: null,
-          earlyPhotoMediaId: null,
-        },
-      });
-      if (claimed.count === 0) return; // another handler already transitioned
-
-      const styleNames = selections.map(s => styleDisplayName(s, lang));
-      await wa.sendText(session.phoneNumber, msgAllStylesReady(lang, styleNames));
-      await wa.sendText(session.phoneNumber, msgSendProductPhotos(lang));
-      return;
-    }
-
-    if (buttonId === ButtonIds.NEW_STYLE || buttonId === 'try_new_style') {
-      // Atomic guard: only the first handler to claim IDLE→SETUP_STYLE proceeds
+    // Profile confirmation: continue with saved profile → SETUP_STYLE (pick pack for this order)
+    if (buttonId === ButtonIds.PROFILE_CONTINUE) {
       const claimed = await prisma.session.updateMany({
         where: { phoneNumber: session.phoneNumber, state: 'IDLE' },
         data: {
@@ -110,156 +70,162 @@ export async function handleIdle(
           styleSelection: null,
           styleSelections: [],
           stylePickStep: 0,
+          imageMediaIds: [],
+          imageStorageUrls: [],
+          voiceInstructions: null,
           currentOrderId: null,
           earlyPhotoMediaId: null,
         },
       });
-      if (claimed.count === 0) return; // another handler already transitioned
+      if (claimed.count === 0) return;
+      await sendStylePackList(session.phoneNumber, lang, wa, user.businessType ?? undefined);
+      return;
+    }
 
-      // Now send the style list (only runs once)
-      await sendStyleList(session.phoneNumber, lang, wa, user.businessType ?? undefined, []);
+    // Profile update: change brand name → SETUP_NAME
+    if (buttonId === ButtonIds.PROFILE_CHANGE_BRAND) {
+      const claimed = await prisma.session.updateMany({
+        where: { phoneNumber: session.phoneNumber, state: 'IDLE' },
+        data: { state: 'SETUP_NAME', stateEnteredAt: new Date() },
+      });
+      if (claimed.count === 0) return;
+      await wa.sendText(
+        session.phoneNumber,
+        isHindi(lang) ? 'Apna naya brand naam likhiye:' : 'Type your new brand name:',
+      );
+      return;
+    }
+
+    // Profile update: change category → SETUP_CATEGORY
+    if (buttonId === ButtonIds.PROFILE_CHANGE_CATEGORY) {
+      const claimed = await prisma.session.updateMany({
+        where: { phoneNumber: session.phoneNumber, state: 'IDLE' },
+        data: { state: 'SETUP_CATEGORY', stateEnteredAt: new Date() },
+      });
+      if (claimed.count === 0) return;
+      await sendCategoryList(session.phoneNumber, lang, wa, displayName ?? undefined);
+      return;
+    }
+
+    // Legacy: SAME_STYLE / NEW_STYLE (old sessions that still have these queued)
+    if (buttonId === ButtonIds.SAME_STYLE || buttonId === ButtonIds.NEW_STYLE || buttonId === 'try_new_style') {
+      const claimed = await prisma.session.updateMany({
+        where: { phoneNumber: session.phoneNumber, state: 'IDLE' },
+        data: {
+          state: 'AWAITING_PHOTO',
+          stateEnteredAt: new Date(),
+          styleSelection: null,
+          styleSelections: [],
+          stylePickStep: 0,
+          imageMediaIds: [],
+          imageStorageUrls: [],
+          voiceInstructions: null,
+          currentOrderId: null,
+          earlyPhotoMediaId: null,
+        },
+      });
+      if (claimed.count === 0) return;
+      await wa.sendText(session.phoneNumber, msgSendProductPhotos(lang));
       return;
     }
   }
 
+  // ── Returning user ────────────────────────────────────────────────────────────────
   if (isReturning) {
-    // --- Returning user with saved style: confirm ---
-    if (user.lastStyleUsed) {
-      const styleName = styleDisplayName(user.lastStyleUsed, lang);
-
-      // We always resolve to 3 styles (filling from Smart Pack if needed), so label
-      // is always "Same 3 styles" regardless of how many were previously saved.
-      const prevSession = await prisma.session.findUnique({
-        where: { phoneNumber: session.phoneNumber },
-        select: { styleSelections: true },
-      });
-      const hasFullPack = (prevSession?.styleSelections ?? []).length >= OUTPUT_STYLES_PER_ORDER;
-      const sameLabel = lang === 'hinglish' ? 'Same 3 styles' : 'Same 3 styles';
-
-      // If they sent a photo directly, download + upload immediately, then ask style
-      if (message.messageType === 'image' && message.mediaId) {
-        let storageUrl: string | null = null;
-        try {
-          const { buffer, mimeType } = await downloadWhatsAppMedia(message.mediaId);
-          const ext = mimeToExt(mimeType);
-          const path = `${session.phoneNumber}/${Date.now()}_0${ext}`;
-          storageUrl = await uploadFile(Buckets.RAW_IMAGES, path, buffer, mimeType);
-        } catch (err) {
-          logger.error('Failed to download/upload early photo in IDLE', {
-            phoneNumber: session.phoneNumber,
-            mediaId: message.mediaId,
-            error: err instanceof Error ? err.message : String(err),
-          });
-        }
-
-        await prisma.session.update({
-          where: { phoneNumber: session.phoneNumber },
-          data: {
-            state: 'AWAITING_PHOTO',
-            stateEnteredAt: new Date(),
-            imageMediaIds: storageUrl ? [message.mediaId] : [],
-            imageStorageUrls: storageUrl ? [storageUrl] : [],
-            earlyPhotoMediaId: null,
-            styleSelection: null,
-            voiceInstructions: message.caption?.trim() || null,
-            currentOrderId: null,
-          },
-        });
-        const bodyText = hasFullPack
-          ? (lang === 'hinglish'
-            ? `Photo mil gayi, ${user.name} ji!\nPehle ke 3 styles use karein?`
-            : `Got your photo, ${user.name}!\nUse your previous 3 styles?`)
-          : (lang === 'hinglish'
-            ? `Photo mil gayi, ${user.name} ji!\n${styleName} style lagayein?`
-            : `Got your photo, ${user.name}!\nUse ${styleName} style?`);
-        try {
-          await wa.sendButtons(
-            session.phoneNumber,
-            bodyText,
-            [
-              { id: ButtonIds.SAME_STYLE, title: sameLabel },
-              { id: ButtonIds.NEW_STYLE, title: lang === 'hinglish' ? 'Naye styles' : 'New styles' },
-            ],
-          );
-        } catch (btnErr) {
-          logger.error('sendButtons failed in handleIdle (photo path), falling back to sendText', { phoneNumber: session.phoneNumber, error: String(btnErr) });
-          await wa.sendText(session.phoneNumber, lang === 'hinglish'
-            ? `Photo mil gayi, ${user.name} ji! Kaunsa style: "${styleName}" ya naya?`
-            : `Got your photo, ${user.name}! Use "${styleName}" style or pick new ones?`);
-        }
-        return;
-      }
-
-      // Text message: show style confirmation
-      logger.info('Sending returning-user style confirmation buttons', { phoneNumber: session.phoneNumber, styleName, hasFullPack });
-      const confirmBody = hasFullPack
-        ? (lang === 'hinglish'
-          ? `${user.name} ji! Photo bhejiye — pehle ke 3 styles mein banayenge.\nStyles badalne hain?`
-          : `${user.name}! Send your photo — we'll use your previous 3 styles.\nWant different styles?`)
-        : (lang === 'hinglish'
-          ? `${user.name} ji! Photo bhejiye — ${styleName} mein banayenge.\nStyle badlana hai?`
-          : `${user.name}! Send your photo — we'll use ${styleName}.\nWant a different style?`);
+    // If they sent a photo directly, accept it immediately
+    if (message.messageType === 'image' && message.mediaId) {
+      let storageUrl: string | null = null;
       try {
-        await wa.sendButtons(
-          session.phoneNumber,
-          confirmBody,
-          [
-            { id: ButtonIds.SAME_STYLE, title: sameLabel },
-            { id: ButtonIds.NEW_STYLE, title: lang === 'hinglish' ? 'Naye styles' : 'New styles' },
-          ],
-        );
-        logger.info('sendButtons succeeded', { phoneNumber: session.phoneNumber });
-      } catch (btnErr) {
-        logger.error('sendButtons failed in handleIdle, falling back to sendText', { phoneNumber: session.phoneNumber, error: String(btnErr) });
-        await wa.sendText(
-          session.phoneNumber,
-          lang === 'hinglish'
-            ? `Wapas aao, ${user.name} ji! Photo bhejiye, "${styleName}" mein banayenge.`
-            : `Welcome back, ${user.name}! Send your product photo — we'll use "${styleName}".`,
-        );
+        const { buffer, mimeType } = await downloadWhatsAppMedia(message.mediaId);
+        const ext = mimeToExt(mimeType);
+        const path = `${session.phoneNumber}/${Date.now()}_0${ext}`;
+        storageUrl = await uploadFile(Buckets.RAW_IMAGES, path, buffer, mimeType);
+      } catch (err) {
+        logger.error('Failed to download/upload early photo in IDLE', {
+          phoneNumber: session.phoneNumber,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
+      await prisma.session.update({
+        where: { phoneNumber: session.phoneNumber },
+        data: {
+          state: 'AWAITING_PHOTO',
+          stateEnteredAt: new Date(),
+          imageMediaIds: storageUrl ? [message.mediaId] : [],
+          imageStorageUrls: storageUrl ? [storageUrl] : [],
+          earlyPhotoMediaId: null,
+          styleSelection: null,
+          styleSelections: [],
+          voiceInstructions: message.caption?.trim() || null,
+          currentOrderId: null,
+        },
+      });
+      const photoAck = isHindi(lang)
+        ? `Photo mil gayi, ${displayName}. Processing shuru ho raha hai.`
+        : `Photo received, ${displayName}. Getting started.`;
+      await wa.sendText(session.phoneNumber, photoAck);
       return;
     }
 
-    // --- Returning user without saved style: go to SETUP_STYLE (styles before photos) ---
-    logger.info('Returning user — no lastStyleUsed, transitioning to SETUP_STYLE', { phoneNumber: session.phoneNumber });
-    await transitionTo(session.phoneNumber, 'SETUP_STYLE', {
-      imageMediaIds: [],
-      imageStorageUrls: [],
-      styleSelection: null,
-      styleSelections: [],
-      stylePickStep: 0,
-      voiceInstructions: null,
-      currentOrderId: null,
-      earlyPhotoMediaId: null,
-    });
+    // Show saved profile summary + options
+    const categoryDisplay = displayCategoryName(user.businessType ?? null, lang);
+    const profileBody = lang === 'hi'
+      ? `वापस आने पर स्वागत है, ${displayName}। नए ऐड बनाने के लिए तैयार हैं?\n\nआपकी सेव की हुई प्रोफ़ाइल अभी भी एक्टिव है। सीधे फ़ोटो भेजना शुरू करें, या पहले कुछ बदलना है?`
+      : isHindi(lang)
+      ? `${displayName}. Aapka saved profile:\n• Category: ${categoryDisplay}\n\nContinue karein ya update karein.`
+      : `${displayName}. Your saved profile:\n• Category: ${categoryDisplay}\n\nContinue or update your profile.`;
+
     try {
-      await wa.sendText(
+      await wa.sendButtons(
         session.phoneNumber,
-        lang === 'hinglish' ? `Wapas aao, ${user.name} ji!` : `Welcome back, ${user.name}!`,
+        profileBody,
+        [
+          { id: ButtonIds.PROFILE_CONTINUE,         title: 'Continue' },
+          { id: ButtonIds.PROFILE_CHANGE_BRAND,     title: isHindi(lang) ? 'Brand naam' : 'Change brand' },
+          { id: ButtonIds.PROFILE_CHANGE_CATEGORY,  title: isHindi(lang) ? 'Category' : 'Change category' },
+        ],
       );
-    } catch (txtErr) {
-      logger.error('sendText failed for welcome back message', { phoneNumber: session.phoneNumber, error: String(txtErr) });
+    } catch (btnErr) {
+      logger.error('sendButtons failed in handleIdle (returning user), falling back to sendText', {
+        phoneNumber: session.phoneNumber,
+        error: String(btnErr),
+      });
+      await wa.sendText(session.phoneNumber, profileBody);
     }
-    await sendStyleList(session.phoneNumber, lang, wa, user.businessType ?? undefined, []);
     return;
   }
 
-  // --- New user: welcome + language picker ---
-  await transitionTo(session.phoneNumber, 'SETUP_LANGUAGE');
-  try {
-    await wa.sendButtons(
-      session.phoneNumber,
-      'Namaste! Welcome to Autmn.\nKaunsi bhasha? Which language?',
-      [
-        { id: ButtonIds.LANG_HINDI, title: 'Hindi' },
-        { id: ButtonIds.LANG_ENGLISH, title: 'English' },
-      ],
-    );
-  } catch (btnErr) {
-    logger.error('sendButtons failed for new user language picker, falling back to sendText', { phoneNumber: session.phoneNumber, error: String(btnErr) });
-    await wa.sendText(session.phoneNumber, 'Namaste! Welcome to Autmn.\nReply "Hindi" or "English" to continue.');
-  }
+  // ── New user: auto-detect language from first message, skip picker ───────────────
+  const firstMessageText = message.text ?? message.caption ?? '';
+  const detectedLang: Language = await detectLanguage(firstMessageText).catch(() => 'en' as Language);
+
+  await updateUser(session.phoneNumber, { language: detectedLang });
+  await transitionTo(session.phoneNumber, 'SETUP_NAME');
+
+  const combinedQuestion = detectedLang === 'hi'
+    ? 'नमस्ते! मैं Autmn हूँ — आपके प्रोडक्ट की फ़ोटो को प्रोफेशनल ऐड इमेज में बदलता हूँ, कुछ ही मिनटों में।\n\nशुरू करने से पहले — आपके ब्रांड का नाम क्या है और आप कौन सा प्रोडक्ट बेचते हैं?'
+    : detectedLang === 'hinglish'
+    ? 'Namaste! Autmn mein aapka swagat hai 🙏\n\nAapka brand naam aur aap kya bechte hain — jaise: Riya Boutique, Jewellery\n\nOptions: Jewellery · Food · Garments · Skincare · Candle · Bags · Other'
+    : "Namaste! Welcome to Autmn 🙏\n\nYour brand name and what you sell — e.g. 'Riya Boutique, Jewellery'\n\nOptions: Jewellery · Food · Garments · Skincare · Candle · Bags · Other";
+
+  await wa.sendText(session.phoneNumber, combinedQuestion);
+}
+
+function displayCategoryName(categoryId: string | null, lang: Language): string {
+  const c = categoryId?.replace(/^cat_/, '') ?? '';
+  const names: Record<string, { en: string; hinglish: string }> = {
+    jewellery:  { en: 'Jewellery',           hinglish: 'Jewellery / Zewar' },
+    food:       { en: 'Food',                hinglish: 'Food / Khaana' },
+    garment:    { en: 'Garments',            hinglish: 'Kapde / Garments' },
+    skincare:   { en: 'Skincare & Beauty',   hinglish: 'Skincare / Beauty' },
+    candle:     { en: 'Candle & Home Decor', hinglish: 'Candle / Home Decor' },
+    bag:        { en: 'Bags & Accessories',  hinglish: 'Bag / Purse' },
+    electronics:{ en: 'Electronics',         hinglish: 'Electronics' },
+    general:    { en: 'Other',               hinglish: 'Kuch Aur' },
+  };
+  const entry = names[c];
+  if (!entry) return categoryId ?? 'Not set';
+  return isHindi(lang) ? entry.hinglish : entry.en;
 }
 
 // ---------------------------------------------------------------------------
@@ -275,7 +241,7 @@ export async function handleSetupLanguage(
   let lang: Language = 'en';
 
   if (message.messageType === 'interactive' && message.buttonReplyId) {
-    lang = message.buttonReplyId === ButtonIds.LANG_HINDI ? 'hinglish' : 'en';
+    lang = message.buttonReplyId === ButtonIds.LANG_HINDI ? 'hi' : 'en';
   } else if (message.messageType === 'text' && message.text) {
     const text = message.text.toLowerCase().trim() ?? '';
     const isHinglish = text === 'hindi' || text === '1' || text === 'हिंदी' || text === 'हिन्दी' ||
@@ -285,10 +251,12 @@ export async function handleSetupLanguage(
 
   await updateUser(session.phoneNumber, { language: lang });
   await transitionTo(session.phoneNumber, 'SETUP_NAME');
-  await wa.sendText(
-    session.phoneNumber,
-    lang === 'hinglish' ? 'Aapka naam bataiye?' : "What's your name?",
-  );
+
+  const combinedQuestion = isHindi(lang)
+    ? 'Aapka brand naam aur aap kya bechte hain — jaise: Riya Boutique, Jewellery\n\nOptions: Jewellery · Food · Garments · Skincare · Candle · Bags · Other'
+    : "Your brand name and what you sell — e.g. 'Riya Boutique, Jewellery'\n\nOptions: Jewellery · Food · Garments · Skincare · Candle · Bags · Other";
+
+  await wa.sendText(session.phoneNumber, combinedQuestion);
 }
 
 // ---------------------------------------------------------------------------
@@ -302,25 +270,53 @@ export async function handleSetupName(
   wa: WhatsAppClient,
 ): Promise<void> {
   const lang = user.language as Language;
-  const rawName = message.text?.trim();
+  const raw = message.text?.trim();
 
-  if (!rawName || rawName.length < 1) {
+  if (!raw || raw.length < 1) {
     await wa.sendText(
       session.phoneNumber,
-      lang === 'hinglish' ? 'Naam likh ke bhejiye.' : 'Please type your name.',
+      isHindi(lang)
+        ? 'Brand naam aur category likhiye — jaise: Riya Boutique, Jewellery'
+        : "Type your brand name and what you sell — e.g. 'Riya Boutique, Jewellery'",
     );
     return;
   }
 
-  // Sanitize: strip non-printable characters, truncate to 50 chars
-  // eslint-disable-next-line no-control-regex
-  const sanitized = rawName.replace(/[\x00-\x1F\x7F]/g, '').trim().slice(0, 50);
-  const name = sanitized.charAt(0).toUpperCase() + sanitized.slice(1);
-  await updateUser(session.phoneNumber, { name });
+  const { brandName, categoryId } = parseBrandAndCategory(raw);
 
-  // Go straight to category — no filler message
-  await transitionTo(session.phoneNumber, 'SETUP_CATEGORY');
-  await sendCategoryList(session.phoneNumber, lang, wa, name);
+  // Save brandName to both brandName and name (name is used by delivery messages for compat)
+  await updateUser(session.phoneNumber, { brandName, name: brandName });
+
+  if (categoryId) {
+    await updateUser(session.phoneNumber, { businessType: categoryId });
+    await transitionTo(session.phoneNumber, 'SETUP_STYLE', {
+      currentOrderId: null,
+      styleSelection: null,
+      styleSelections: [],
+      stylePickStep: 0,
+      imageMediaIds: [],
+      imageStorageUrls: [],
+      voiceInstructions: null,
+      earlyPhotoMediaId: null,
+    });
+    await sendStylePackList(session.phoneNumber, lang, wa, categoryId);
+  } else if (user.businessType) {
+    // Returning user updating brand name only — already has category, pick style pack for this order
+    await transitionTo(session.phoneNumber, 'SETUP_STYLE', {
+      currentOrderId: null,
+      styleSelection: null,
+      styleSelections: [],
+      stylePickStep: 0,
+      imageMediaIds: [],
+      imageStorageUrls: [],
+      voiceInstructions: null,
+      earlyPhotoMediaId: null,
+    });
+    await sendStylePackList(session.phoneNumber, lang, wa, user.businessType ?? undefined);
+  } else {
+    await transitionTo(session.phoneNumber, 'SETUP_CATEGORY');
+    await sendCategoryList(session.phoneNumber, lang, wa, brandName);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -336,19 +332,18 @@ export async function handleSetupCategory(
   const lang = user.language as Language;
 
   if (message.messageType !== 'interactive' || !message.listReplyId) {
-    await sendCategoryList(session.phoneNumber, lang, wa, user.name ?? undefined);
+    await sendCategoryList(session.phoneNumber, lang, wa, (user as any).brandName ?? user.name ?? undefined);
     return;
   }
 
   const categoryId = message.listReplyId;
   if (!VALID_CATEGORY_IDS.has(categoryId)) {
-    await sendCategoryList(session.phoneNumber, lang, wa, user.name ?? undefined);
+    await sendCategoryList(session.phoneNumber, lang, wa, (user as any).brandName ?? user.name ?? undefined);
     return;
   }
 
   await updateUser(session.phoneNumber, { businessType: categoryId });
 
-  // Styles-first: go to SETUP_STYLE so user picks style before sending photos
   await transitionTo(session.phoneNumber, 'SETUP_STYLE', {
     currentOrderId: null,
     styleSelection: null,
@@ -359,7 +354,7 @@ export async function handleSetupCategory(
     voiceInstructions: null,
     earlyPhotoMediaId: null,
   });
-  await sendStyleList(session.phoneNumber, lang, wa, categoryId, []);
+  await sendStylePackList(session.phoneNumber, lang, wa, categoryId);
 }
 
 // ---------------------------------------------------------------------------
@@ -373,24 +368,24 @@ export async function sendCategoryList(
   name?: string,
 ): Promise<void> {
   const greeting = name
-    ? (lang === 'hinglish' ? `Shukriya, ${name} ji! Aap kaunsa product bechte hain?` : `Thanks, ${name}! What kind of product do you sell?`)
-    : (lang === 'hinglish' ? 'Aap kaunsa product bechte hain?' : 'What kind of product do you sell?');
+    ? (isHindi(lang) ? `${name} — aap kaunsa product bechte hain?` : `${name} — what do you sell?`)
+    : (isHindi(lang) ? 'Aap kaunsa product bechte hain?' : 'What do you sell?');
 
   await wa.sendList(
     phoneNumber,
     greeting,
-    lang === 'hinglish' ? 'Chuniye' : 'Choose',
+    isHindi(lang) ? 'Chuniye' : 'Choose',
     [
       {
-        title: lang === 'hinglish' ? 'Product type' : 'Product Type',
+        title: isHindi(lang) ? 'Product type' : 'Product Type',
         rows: [
-          { id: ListIds.CAT_JEWELLERY, title: lang === 'hinglish' ? 'Jewellery / Zewar' : 'Jewellery', description: 'Rings, necklaces, earrings...' },
-          { id: ListIds.CAT_FOOD, title: lang === 'hinglish' ? 'Khaana / Food' : 'Food', description: 'Packaged food, sweets, snacks...' },
-          { id: ListIds.CAT_GARMENT, title: lang === 'hinglish' ? 'Kapde / Garments' : 'Garments', description: 'Sarees, kurtas, shirts...' },
+          { id: ListIds.CAT_JEWELLERY, title: isHindi(lang) ? 'Jewellery / Zewar' : 'Jewellery', description: 'Rings, necklaces, earrings...' },
+          { id: ListIds.CAT_FOOD, title: isHindi(lang) ? 'Khaana / Food' : 'Food', description: 'Packaged food, sweets, snacks...' },
+          { id: ListIds.CAT_GARMENT, title: isHindi(lang) ? 'Kapde / Garments' : 'Garments', description: 'Sarees, kurtas, shirts...' },
           { id: ListIds.CAT_SKINCARE, title: 'Skincare / Beauty', description: 'Creams, serums, cosmetics...' },
           { id: ListIds.CAT_CANDLE, title: 'Candle / Home Decor', description: 'Candles, diffusers, decor...' },
           { id: ListIds.CAT_BAG, title: 'Bag / Purse', description: 'Handbags, wallets, clutches...' },
-          { id: ListIds.CAT_GENERAL, title: lang === 'hinglish' ? 'Kuch Aur' : 'Other', description: 'Electronics, toys, etc...' },
+          { id: ListIds.CAT_GENERAL, title: isHindi(lang) ? 'Kuch Aur' : 'Other', description: 'Electronics, toys, etc...' },
         ],
       },
     ],
@@ -410,41 +405,47 @@ export async function sendStylePackList(
   wa: WhatsAppClient,
   categoryId?: string,
 ): Promise<void> {
+  if (lang === 'hi') {
+    await wa.sendText(
+      phoneNumber,
+      'कितने ऐड वर्ज़न चाहिए?\n\n• 1 ऐड — ₹30\n• 2 ऐड — ₹60\n• 3 ऐड — ₹90\n\nहर वर्ज़न का स्टाइल अलग होगा ताकि आप टेस्ट कर सकें।',
+    );
+  }
   const headerText = msgPickStylePack(lang);
 
   const rows = [
     {
       id: ListIds.SMART_PACK,
-      title: lang === 'hinglish' ? 'Smart Pack \u2728' : 'Smart Pack \u2728',
-      description: lang === 'hinglish'
+      title: isHindi(lang) ? 'Smart Pack \u2728' : 'Smart Pack \u2728',
+      description: isHindi(lang)
         ? 'AI aapke product ke liye 3 best styles chunega'
         : 'AI picks the best 3 styles for your product',
     },
     {
       id: ListIds.BESTSELLER_PACK,
-      title: lang === 'hinglish' ? 'Best Seller Pack \ud83c\udfc6' : 'Best Seller Pack \ud83c\udfc6',
-      description: lang === 'hinglish'
+      title: isHindi(lang) ? 'Best Seller Pack \ud83c\udfc6' : 'Best Seller Pack \ud83c\udfc6',
+      description: isHindi(lang)
         ? 'Lifestyle + Studio + Dark Luxury'
         : 'Lifestyle + Studio + Dark Luxury',
     },
     {
       id: ListIds.FESTIVAL_PACK,
-      title: lang === 'hinglish' ? 'Festival Pack \ud83c\udf89' : 'Festival Pack \ud83c\udf89',
-      description: lang === 'hinglish'
+      title: isHindi(lang) ? 'Festival Pack \ud83c\udf89' : 'Festival Pack \ud83c\udf89',
+      description: isHindi(lang)
         ? 'Tyohar + Lifestyle + Clean White'
         : 'Festive + Lifestyle + Clean White',
     },
     {
       id: ListIds.ACTION_PACK,
-      title: lang === 'hinglish' ? 'Action Pack \ud83d\udcaa' : 'Action Pack \ud83d\udcaa',
-      description: lang === 'hinglish'
+      title: isHindi(lang) ? 'Action Pack \ud83d\udcaa' : 'Action Pack \ud83d\udcaa',
+      description: isHindi(lang)
         ? 'Model + Outdoor + Lifestyle'
         : 'With Model + Outdoor + Lifestyle',
     },
     {
       id: ListIds.CUSTOM_PACK,
-      title: lang === 'hinglish' ? 'Custom \ud83c\udfa8' : 'Custom \ud83c\udfa8',
-      description: lang === 'hinglish'
+      title: isHindi(lang) ? 'Custom \ud83c\udfa8' : 'Custom \ud83c\udfa8',
+      description: isHindi(lang)
         ? 'Khud 3 styles chuniye'
         : 'Pick 3 styles yourself',
     },
@@ -453,8 +454,8 @@ export async function sendStylePackList(
   await wa.sendList(
     phoneNumber,
     headerText,
-    lang === 'hinglish' ? 'Pack chuniye' : 'Choose pack',
-    [{ title: lang === 'hinglish' ? 'Style Packs' : 'Style Packs', rows }],
+    isHindi(lang) ? 'Pack chuniye' : 'Choose pack',
+    [{ title: isHindi(lang) ? 'Style Packs' : 'Style Packs', rows }],
   );
 }
 
@@ -484,8 +485,8 @@ export async function sendStyleList(
     { id: ListIds.STYLE_STUDIO, title: styleDisplayName(ListIds.STYLE_STUDIO, lang), description: makeDesc(ListIds.STYLE_STUDIO, 'Colored backdrop studio') },
     { id: ListIds.STYLE_LIFESTYLE, title: styleDisplayName(ListIds.STYLE_LIFESTYLE, lang), description: makeDesc(ListIds.STYLE_LIFESTYLE, 'Real-life setting') },
     { id: ListIds.STYLE_OUTDOOR, title: styleDisplayName(ListIds.STYLE_OUTDOOR, lang), description: makeDesc(ListIds.STYLE_OUTDOOR, 'Natural outdoor scene') },
-    { id: ListIds.STYLE_GRADIENT, title: styleDisplayName(ListIds.STYLE_GRADIENT, lang), description: makeDesc(ListIds.STYLE_GRADIENT, lang === 'hinglish' ? 'Dramatic dark aur cinematic' : 'Dramatic dark & cinematic') },
-    { id: ListIds.STYLE_FESTIVE, title: styleDisplayName(ListIds.STYLE_FESTIVE, lang), description: makeDesc(ListIds.STYLE_FESTIVE, lang === 'hinglish' ? 'Tyohar ka mahaul' : 'Indian festival celebration') },
+    { id: ListIds.STYLE_GRADIENT, title: styleDisplayName(ListIds.STYLE_GRADIENT, lang), description: makeDesc(ListIds.STYLE_GRADIENT, isHindi(lang) ? 'Dramatic dark aur cinematic' : 'Dramatic dark & cinematic') },
+    { id: ListIds.STYLE_FESTIVE, title: styleDisplayName(ListIds.STYLE_FESTIVE, lang), description: makeDesc(ListIds.STYLE_FESTIVE, isHindi(lang) ? 'Tyohar ka mahaul' : 'Indian festival celebration') },
     { id: ListIds.STYLE_WITH_MODEL, title: styleDisplayName(ListIds.STYLE_WITH_MODEL, lang), description: makeDesc(ListIds.STYLE_WITH_MODEL, 'AI person with product') },
   ].filter(row => !alreadyPicked.includes(row.id));
 
@@ -494,8 +495,8 @@ export async function sendStyleList(
     ? [
         {
           id: ListIds.SMART_PACK,
-          title: lang === 'hinglish' ? 'Smart Pack \u2728' : 'Smart Pack \u2728',
-          description: lang === 'hinglish'
+          title: isHindi(lang) ? 'Smart Pack \u2728' : 'Smart Pack \u2728',
+          description: isHindi(lang)
             ? 'AI aapke product ke liye 3 best styles chunega'
             : 'AI picks the best 3 styles for your product',
         },
@@ -503,14 +504,14 @@ export async function sendStyleList(
       ]
     : individualRows;
 
-  const headerText = lang === 'hinglish'
+  const headerText = isHindi(lang)
     ? `Style ${pickNumber} of ${OUTPUT_STYLES_PER_ORDER} chuniye:`
     : `Pick style ${pickNumber} of ${OUTPUT_STYLES_PER_ORDER}:`;
 
   await wa.sendList(
     phoneNumber,
     headerText,
-    lang === 'hinglish' ? 'Chuniye' : 'Choose',
+    isHindi(lang) ? 'Chuniye' : 'Choose',
     [{ title: 'Styles', rows: allStyleRows }],
   );
 }
@@ -521,46 +522,67 @@ export async function sendStyleList(
 
 const VALID_CATEGORY_IDS = new Set<string>(Object.values(ListIds).filter(id => id.startsWith('cat_')));
 
+// ---------------------------------------------------------------------------
+// Brand + category parser — for combined "Riya Boutique, Jewellery" replies
+// ---------------------------------------------------------------------------
+
+const CATEGORY_PATTERNS: Array<[RegExp, string]> = [
+  [/jewel|jewl|zewar|gold|ring|necklace|earring|haar|kangan|zewarat/i, 'cat_jewellery'],
+  [/food|khaana|khana|bakery|sweet|mithai|snack|namkeen|restaurant|cake|bake/i, 'cat_food'],
+  [/garment|kapda|kapde|saree|sari|kurta|shirt|dress|cloth|fashion|apparel|lehenga/i, 'cat_garment'],
+  [/skin|beauty|cream|serum|lotion|makeup|cosmetic|moisturizer|facewash/i, 'cat_skincare'],
+  [/candle|diffuser|fragrance|decor|aroma/i, 'cat_candle'],
+  [/bag|purse|wallet|handbag|clutch|backpack/i, 'cat_bag'],
+];
+
+function parseBrandAndCategory(raw: string): { brandName: string; categoryId: string | null } {
+  // eslint-disable-next-line no-control-regex
+  const text = raw.replace(/[\x00-\x1F\x7F]/g, '').trim();
+
+  const sanitize = (s: string) => {
+    const t = s.trim().slice(0, 50);
+    return t.charAt(0).toUpperCase() + t.slice(1);
+  };
+
+  // Comma-separated: "Riya Boutique, Jewellery"
+  const commaIdx = text.indexOf(',');
+  if (commaIdx > 0) {
+    const brandPart = text.slice(0, commaIdx).trim();
+    const categoryPart = text.slice(commaIdx + 1).trim();
+    if (brandPart.length >= 1) {
+      let categoryId: string | null = null;
+      for (const [pattern, id] of CATEGORY_PATTERNS) {
+        if (pattern.test(categoryPart)) { categoryId = id; break; }
+      }
+      return { brandName: sanitize(brandPart), categoryId };
+    }
+  }
+
+  // No comma: check if a category keyword is embedded
+  for (const [pattern, id] of CATEGORY_PATTERNS) {
+    if (pattern.test(text)) {
+      const stripped = text.replace(pattern, '').replace(/[,\s]+$/, '').trim();
+      return { brandName: sanitize(stripped.length >= 1 ? stripped : text), categoryId: id };
+    }
+  }
+
+  // Only brand name found — no category recognized
+  return { brandName: sanitize(text), categoryId: null };
+}
+
 /**
  * Fills `existing` styles up to `target` count using the Smart Pack for the
- * given category, then falls back to a default pool. Never repeats a style.
+ * given category. Never repeats a style.
  */
 function fillWithSmartPack(existing: string[], category: string | null, target: number): string[] {
-  const smartPackMapping: Record<string, string[]> = {
-    cat_jewellery: ['style_autmn_special', 'style_gradient', 'style_lifestyle'],
-    cat_food: ['style_autmn_special', 'style_lifestyle', 'style_festive'],
-    cat_garment: ['style_autmn_special', 'style_lifestyle', 'style_with_model'],
-    cat_skincare: ['style_autmn_special', 'style_clean_white', 'style_gradient'],
-    cat_candle: ['style_autmn_special', 'style_gradient', 'style_festive'],
-    cat_bag: ['style_autmn_special', 'style_lifestyle', 'style_gradient'],
-    cat_electronics: ['style_autmn_special', 'style_gradient', 'style_studio'],
-  };
-  const smartPack = smartPackMapping[category ?? ''] ?? ['style_autmn_special', 'style_lifestyle', 'style_gradient'];
-
+  if (existing.length >= target) return existing.slice(0, target);
+  const smartPack = selectStylesForOrder(category, target);
   const result = [...existing];
   const usedSet = new Set(result);
-
   for (const style of smartPack) {
     if (result.length >= target) break;
-    if (!usedSet.has(style)) {
-      result.push(style);
-      usedSet.add(style);
-    }
+    if (!usedSet.has(style)) { result.push(style); usedSet.add(style); }
   }
-
-  // Safety net: if Smart Pack didn't fully cover the gap, pull from a broad pool
-  const fullPool = [
-    'style_autmn_special', 'style_lifestyle', 'style_gradient',
-    'style_outdoor', 'style_studio', 'style_festive', 'style_with_model', 'style_clean_white',
-  ];
-  for (const style of fullPool) {
-    if (result.length >= target) break;
-    if (!usedSet.has(style)) {
-      result.push(style);
-      usedSet.add(style);
-    }
-  }
-
   return result.slice(0, target);
 }
 

@@ -45,7 +45,7 @@ export function msgGreetAndAskCategory(lang: Lang, name: string): string {
     case 'hinglish':
       return `Shukriya, ${name} ji!\nAap kaunsa product bechte hain?`;
     case 'hi':
-      return `शुक्रिया, ${name} जी!\nआप कौनसा product बेचते हैं?`;
+      return `शुक्रिया, ${name} जी!\nआप कौन सा product बेचते हैं?`;
     case 'ta':
       return `நன்றி, ${name}!\nநீங்கள் என்ன product விற்கிறீர்கள்?`;
     case 'te':
@@ -78,7 +78,7 @@ export function msgAskStyle(lang: Lang, name: string, recommendedStyleName?: str
     }
     case 'hi': {
       const rec = recommendedStyleName ? `\n${recommendedStyleName} सबसे अच्छा रहेगा।` : '';
-      return `${name} जी, कौनसा style चाहिए?${rec}`;
+      return `${name} जी, कौन सा style चाहिए?${rec}`;
     }
     case 'ta': {
       const rec = recommendedStyleName ? `\n${recommendedStyleName} best-ஆக இருக்கும்.` : '';
@@ -252,7 +252,7 @@ export function msgSendProductPhotos(lang: Lang): string {
     case 'hinglish':
       return 'Ab apne product ki photos bhejein! Ek hi product ki alag-alag angles se 1-5 photos bhej saktein hain. Jab ho jaye, "done" bolein.';
     case 'hi':
-      return 'अब अपने product की photos भेजें! एक ही product की अलग-अलग angles से 1-5 photos भेज सकते हैं। जब हो जाए, "done" बोलें।';
+      return 'अब अपने प्रोडक्ट की फ़ोटो भेजें। एक ही प्रोडक्ट की अलग-अलग एंगल से 5 तक फ़ोटो भेज सकते हैं — जितनी ज़्यादा एंगल, उतना बेहतर रिज़ल्ट।\n\nसब भेज दें तो "done" लिखें।';
     case 'ta':
       return 'இப்போது உங்கள் product photos அனுப்புங்கள்! ஒரே product-ஐ வெவ்வேறு angles-ல் 1-5 photos அனுப்பலாம். முடிந்ததும் "done" என்று சொல்லுங்கள்.';
     case 'te':
@@ -282,7 +282,7 @@ export function msgPickStylePack(lang: Lang): string {
     case 'hinglish':
       return 'Ek style pack chuniye — ek tap mein 3 best styles ready ho jayenge!';
     case 'hi':
-      return 'एक style pack चुनिए — एक tap में 3 best styles तैयार हो जाएंगे!';
+      return 'अब अपने ऐड के लिए 3 स्टाइल चुनें।\n\nपक्का नहीं है? Smart Pack आपके प्रोडक्ट के हिसाब से सबसे अच्छे स्टाइल खुद चुन लेगा।';
     case 'ta':
       return 'ஒரு style pack தேர்ந்தெடுங்கள் — ஒரே tap-ல் 3 best styles ready ஆகும்!';
     case 'te':
@@ -620,7 +620,7 @@ export function msgProcessingNow(
     case 'hinglish':
       return `Shuru ho gaya, ${name} ji! 🎨\n${photoText} • 3 professional ads\nAapke 3 ads ban rahe hain... 2-3 minute mein ready!${freeNoteHinglish} ⏳`;
     case 'hi':
-      return `शुरू हो गया, ${name} जी! 🎨\n${photoText} • 3 professional ads\nआपके 3 ads बन रहे हैं... 2-3 minute में ready!${freeNoteHi} ⏳`;
+      return 'ठीक है। आपके ऐड लगभग 2 मिनट में तैयार हो जाएंगे।';
     case 'ta':
       return `ஆரம்பித்தாகிவிட்டது, ${name}! 🎨\n${photoText} • 3 professional ads\nஉங்கள் 3 ads தயாராகின்றன... 2-3 minute-ல் ready!${freeNoteTa} ⏳`;
     case 'te':
@@ -1049,7 +1049,7 @@ export function msgStyleImageDelivered(
     case 'hinglish':
       return `${styleEmoji} *${styleLabel} Ad* (${index}/${total}) taiyaar hai!`;
     case 'hi':
-      return `${styleEmoji} *${styleLabel} Ad* (${index}/${total}) तैयार है!`;
+      return `ये रहा आपका *${styleLabel}* ऐड। ${styleEmoji}${total > 1 ? ` (${index}/${total})` : ''}`;
     case 'ta':
       return `${styleEmoji} உங்கள் *${styleLabel} Ad* ready! (${index}/${total})`;
     case 'te':
@@ -1110,7 +1110,7 @@ export function msgWhichAdToChange(lang: Lang): string {
     case 'hinglish':
       return 'Kaunsa ad badalna hai?';
     case 'hi':
-      return 'कौनसा ad बदलना है?';
+      return 'कौन सा ऐड फिर से बनाना है? एक या एक से ज़्यादा चुन सकते हैं।';
     case 'ta':
       return 'எந்த ad மாற்ற வேண்டும்?';
     case 'te':
@@ -1141,7 +1141,7 @@ export function msgThankYou(lang: Lang, isFirstOrder: boolean): string {
       case 'hinglish':
         return 'Bahut badiya! 🎉\nYeh photo Instagram ya WhatsApp group pe share karein — customers ko dikhao!\n\nAgle baar sirf Rs 99 mein. Ek aur photo banwani hai?';
       case 'hi':
-        return 'बहुत बढ़िया! 🎉\nयह photo Instagram या WhatsApp group पर share करें — customers को दिखाओ!\n\nअगली बार सिर्फ Rs 99 में। एक और photo बनवानी है?';
+        return 'बहुत बढ़िया! 🎉\nयह photo Instagram या WhatsApp group पर share करें — customers को दिखाएं!\n\nअगली बार सिर्फ Rs 99 में। एक और photo बनवानी है?';
       case 'ta':
         return 'அருமை! 🎉\nInstagram அல்லது WhatsApp group-ல் share பண்ணுங்கள் — customers-கு காட்டுங்கள்!\n\nஅடுத்த முறை வெறும் Rs 99. இன்னொரு photo வேண்டுமா?';
       case 'te':
@@ -1169,7 +1169,7 @@ export function msgThankYou(lang: Lang, isFirstOrder: boolean): string {
     case 'hinglish':
       return 'Bahut badiya! 🎉\nYeh photo share karein — customers ko dikhao!\n\nEk aur product ki photo banwani hai?';
     case 'hi':
-      return 'बहुत बढ़िया! 🎉\nयह photo share करें — customers को दिखाओ!\n\nएक और product की photo बनवानी है?';
+      return 'बहुत बढ़िया! 🎉\nयह photo share करें — customers को दिखाएं!\n\nएक और product की photo बनवानी है?';
     case 'ta':
       return 'அருமை! 🎉\nPhoto share பண்ணுங்கள் — customers-கு காட்டுங்கள்!\n\nइன்னொரு product photo வேண்டுமா?';
     case 'te':
@@ -1273,7 +1273,7 @@ export function msgAnySpecialInstructions(lang: Lang): string {
     case 'hinglish':
       return 'Kuch special instructions? Text ya voice note bhejein.';
     case 'hi':
-      return 'कुछ special instructions? Text या voice note भेजें।';
+      return 'कोई ख़ास हिदायत? जैसे: "पीछे वाला कप मत दिखाना" या "हाथ फ्रेम में नहीं चाहिए।"\n\nकुछ नहीं है तो "none" लिखें।';
     case 'ta':
       return 'ஏதேனும் special instructions? Text அல்லது voice note அனுப்புங்கள்.';
     case 'te':
@@ -1633,7 +1633,7 @@ export function styleDisplayName(styleId: string, lang: Lang): string {
     style_video_shoot: { hinglish: 'Video Ad 🎬 (Beta)', en: 'Video Ad 🎬 (Beta)' },
   };
   // All non-hinglish languages fall back to English until translated
-  const key = lang === 'hinglish' ? 'hinglish' : 'en';
+  const key = (lang === 'hinglish' || lang === 'hi') ? 'hinglish' : 'en';
   return names[styleId]?.[key] ?? styleId;
 }
 
@@ -1647,6 +1647,6 @@ export function categoryDisplayName(categoryId: string, lang: Lang): string {
     cat_bag: { hinglish: 'Bag / Purse', en: 'Bag / Purse' },
     cat_general: { hinglish: 'Kuch Aur / Other', en: 'Other' },
   };
-  const key = lang === 'hinglish' ? 'hinglish' : 'en';
+  const key = (lang === 'hinglish' || lang === 'hi') ? 'hinglish' : 'en';
   return names[categoryId]?.[key] ?? categoryId;
 }

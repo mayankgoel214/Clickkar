@@ -13,6 +13,7 @@ import type { WhatsAppClient } from '@autmn/whatsapp';
 import { prisma } from '@autmn/db';
 import { getSession, getOrCreateUser, transitionTo, checkAndMarkProcessed } from './db-helpers.js';
 import type { MessageContext, Language } from './types.js';
+import { isHindi } from './types.js';
 import { logger } from './logger.js';
 
 // Handlers
@@ -78,10 +79,25 @@ export async function handleIncomingMessage(
     messageType: message.messageType,
   });
 
+  // 5-pre. Session recovery — if the user returns after a significant gap on an
+  // incomplete session, send a contextual "you left off..." message before the
+  // normal handler runs. The normal handler still runs immediately after, so the
+  // user sees the recovery ack followed by the current-state prompt in one exchange.
+  //
+  // `session.lastUserMessageAt` holds the value from BEFORE the update above,
+  // because getSession fetched it before the update ran. So the gap is real.
+  if (!isEscapeIntent(message)) {
+    const recoveryMsg = buildSessionRecoveryMessage(session, user.language as Language);
+    if (recoveryMsg) {
+      await wa.sendText(phoneNumber, recoveryMsg);
+      logger.info('Session recovery message shown', { phoneNumber, state: session.state });
+    }
+  }
+
   // 5a. Help intent — intercept before state routing
   if (isHelpIntent(message.text)) {
-    const lang = (user.language === 'en' ? 'en' : user.language === 'hinglish' ? 'hinglish' : 'en') as Language;
-    const helpText = lang === 'hinglish'
+    const lang = user.language as Language;
+    const helpText = isHindi(lang)
       ? `🙏 *Autmn Help*\n\n📸 Product photo bhejein → AI professional ad banayega\n\n*Commands:*\n• "hi" — Naya order shuru karein\n• Photo bhejein — Ad banaye\n• Voice note — Instructions dein\n• "hindi" / "english" — Bhasha badlein\n\n*Current status:* ${session.state === 'IDLE' ? 'Ready! Photo bhejein.' : session.state === 'PROCESSING' ? 'Aapka photo process ho raha hai...' : session.state === 'DELIVERED' ? 'Photo deliver ho gaya. Edit karein ya naya bhejein.' : 'Setup chal raha hai.'}`
       : `🙏 *Autmn Help*\n\n📸 Send a product photo → AI creates a professional ad\n\n*Commands:*\n• "hi" — Start a new order\n• Send a photo — Create an ad\n• Voice note — Give instructions\n• "hindi" / "english" — Change language\n\n*Current status:* ${session.state === 'IDLE' ? 'Ready! Send a photo.' : session.state === 'PROCESSING' ? 'Your photo is being processed...' : session.state === 'DELIVERED' ? 'Photo delivered. Edit or send a new one.' : 'Setting up your preferences.'}`;
     await wa.sendText(phoneNumber, helpText);
@@ -292,7 +308,7 @@ export async function handleIncomingMessage(
           const lang = user.language as Language;
           await wa.sendText(
             phoneNumber,
-            lang === 'hinglish'
+            isHindi(lang)
               ? 'Aapki photo process ho rahi hai — bas thoda wait karein!'
               : 'Your photo is being processed — just a moment!',
           );
@@ -375,7 +391,7 @@ export async function handleIncomingMessage(
         // Remind user we are waiting for payment
         {
           const lang = user.language as Language;
-          const waitMsg = lang === 'hinglish'
+          const waitMsg = isHindi(lang)
             ? 'Payment ka intezaar hai. Pay karne ke baad hum aapka edit process karenge.'
             : "Waiting for payment. We'll process your edit once payment is confirmed.";
           await wa.sendText(phoneNumber, waitMsg);
@@ -401,6 +417,97 @@ export async function handleIncomingMessage(
     } catch {
       logger.error('Failed to send error message', { phoneNumber });
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Session recovery — contextual "you left off..." messages
+// ---------------------------------------------------------------------------
+
+const RECOVERY_GAP_MS = 30 * 60 * 1000; // 30 minutes
+
+type RecoveryStep =
+  | 'brand_intake'
+  | 'photo_upload'
+  | 'style_selection'
+  | 'payment'
+  | 'generation'
+  | 'delivery';
+
+function mapStateToRecoveryStep(state: string): RecoveryStep | null {
+  switch (state) {
+    case 'SETUP_LANGUAGE':
+    case 'SETUP_NAME':
+    case 'SETUP_CATEGORY':
+      return 'brand_intake';
+    case 'SETUP_STYLE':
+      return 'style_selection';
+    case 'AWAITING_PHOTO':
+      return 'photo_upload';
+    case 'AWAITING_PAYMENT':
+    case 'AWAITING_REVISION_PAYMENT':
+      return 'payment';
+    case 'PROCESSING':
+    case 'EDIT_PROCESSING':
+      return 'generation';
+    case 'DELIVERED':
+      return 'delivery';
+    default:
+      return null; // IDLE — no recovery needed
+  }
+}
+
+function buildSessionRecoveryMessage(
+  session: { state: string; lastUserMessageAt: Date | null; stateEnteredAt: Date | null },
+  lang: Language,
+): string | null {
+  const step = mapStateToRecoveryStep(session.state);
+  if (!step) return null;
+
+  // Use lastUserMessageAt if available, fall back to stateEnteredAt
+  const lastActivity = session.lastUserMessageAt ?? session.stateEnteredAt;
+  if (!lastActivity) return null;
+
+  const gapMs = Date.now() - new Date(lastActivity).getTime();
+  if (gapMs < RECOVERY_GAP_MS) return null;
+
+  switch (step) {
+    case 'brand_intake':
+      return lang === 'hi'
+        ? 'आप बीच में रुक गए थे — ब्रांड सेटअप। वहीं से जारी रखना है, या नए सिरे से शुरू करें?'
+        : isHindi(lang)
+        ? 'Aap apna brand setup chhod ke gaye the. Wahin se shuru karein?'
+        : 'You left off telling me about your brand. Want to pick up where you stopped?';
+    case 'photo_upload':
+      return lang === 'hi'
+        ? 'आप बीच में रुक गए थे — फ़ोटो भेजना। वहीं से जारी रखना है, या नए सिरे से शुरू करें?'
+        : isHindi(lang)
+        ? 'Aap photo bhejne wale the. Wahin se continue karein?'
+        : 'You were in the middle of sending photos. Want to continue from there?';
+    case 'style_selection':
+      return lang === 'hi'
+        ? 'आप बीच में रुक गए थे — स्टाइल चुनना। वहीं से जारी रखना है, या नए सिरे से शुरू करें?'
+        : isHindi(lang)
+        ? 'Aap styles pick kar rahe the. Continue karein, ya fresh start?'
+        : 'You left off picking your styles. Want to continue, or start fresh?';
+    case 'payment':
+      return lang === 'hi'
+        ? 'आप बीच में रुक गए थे — पेमेंट। वहीं से जारी रखना है, या नए सिरे से शुरू करें?'
+        : isHindi(lang)
+        ? 'Aapka order ready tha par payment complete nahi hua. Wahin se continue karein?'
+        : "Your order is ready but payment wasn't completed. Want to pick up from there?";
+    case 'generation':
+      return lang === 'hi'
+        ? 'आप बीच में रुक गए थे — ऐड बनाना। वहीं से जारी रखना है, या नए सिरे से शुरू करें?'
+        : isHindi(lang)
+        ? 'Jab session drop hua, aapke ads generate ho rahe the. Check kar lete hain...'
+        : 'Your ads were being generated when the session dropped. Let me check on that.';
+    case 'delivery':
+      return lang === 'hi'
+        ? 'आप बीच में रुक गए थे — ऐड देखना। वहीं से जारी रखना है, या नए सिरे से शुरू करें?'
+        : isHindi(lang)
+        ? 'Aapke ads pehle se bhej diye gaye hain. Changes karein ya naya order?'
+        : 'Your ads were already sent. Want to make changes, or start a new order?';
   }
 }
 
@@ -432,10 +539,16 @@ function isLanguageSwitch(text: string | undefined): Language | null {
   if (!text) return null;
   const t = text.trim().toLowerCase();
 
-  // English
+  // English — keyword or phrase ("reply in English", "English mein baat karo")
   if (/^(english|angrezi|अंग्रेजी|अंग्रेज़ी|change to english|english mein|bhasha english)$/.test(t)) return 'en';
-  // Hindi (Devanagari)
+  if (/\b(reply|respond|answer|talk|switch)\s+(in|to)\s+english\b/.test(t)) return 'en';
+  if (/\benglish\s+mein\s+(baat|reply|respond|bol)/.test(t)) return 'en';
+
+  // Hindi (Devanagari) — keyword or phrase ("Hindi mein baat karo", "reply in Hindi")
   if (/^(hindi|हिंदी|हिन्दी|देवनागरी|change to hindi|hindi mein|bhasha hindi)$/.test(t)) return 'hi';
+  if (/\b(reply|respond|answer|talk|switch)\s+(in|to)\s+hindi\b/.test(t)) return 'hi';
+  if (/\bhindi\s+mein\s+(baat|reply|respond|bol)/.test(t)) return 'hi';
+
   // Hinglish (Roman-script Hindi)
   if (/^(hinglish|roman hindi|hindi roman)$/.test(t)) return 'hinglish';
   // Tamil
